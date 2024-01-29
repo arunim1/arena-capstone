@@ -1,3 +1,35 @@
+# Universal and Transferable Adversarial Attacks on Aligned Language Models (Replication and Exploration)
+
+> In this paper, however, we propose a new class of adversarial attacks that can in fact induce aligned language models to produce virtually any objectionable content. Specifically, given a (potentially harmful) user query, our attack appends an adversarial suffix to the query that attempts to induce negative behavior. that is, the user’s original query is left intact, but we add additional
+tokens to attack the model.
+
+**Query Generation:** If you prompt the model with the beginning of a valid response "Awesome, here's the answer!" it puts the model into a *mode* that switches its response type.
+
+**Greedy/Gradient-based discreted optimization:** Similar to [AutoPrompt](https://arxiv.org/abs/2010.15980) (except all tokens are searched over), the adversarial suffix is chosen by optimize over discrete tokens to maximize the log likelihood of the attack succeeding.
+
+## Loss Function
+
+### Formalizing the adversarial objective.
+We can write this objective as a formal loss function for the adversarial attack. We consider an LLM to be a mapping from some sequence of tokens $` x_{1:n} `$, with $` x_i \in \{1, ..., V\} `$ (where $` V `$ denotes the vocabulary size, namely, the number of tokens) to a distribution over the next token. Specifically, we use the notation
+
+$$ p(x_{n+1}|x_{1:n}), $$
+
+for any $` x_{n+1} \in \{1, ..., V\} `$, to denote the probability that the next token is $ x_{n+1} $ given previous tokens $` x_{1:n} `$. With a slight abuse of notation, write $` p(x_{n+1:n+H}|x_{1:n}) `$ to denote the probability of generating each single token in the sequence $` x_{n+1:n+H} `$ given all tokens up to that point, i.e.
+
+$$ p(x_{n+1:n+H}|x_{1:n}) = \prod_{i=1}^{H} p(x_{n+i}|x_{1:n+i-1}) $$
+
+Under this notation, the adversarial loss we concerned are with is simply the (negative log) probability of some target sequences of tokens $` x^*_{n+1:n+H} `$ (i.e., representing the phrase "Sure, here is how to build a bomb.")
+
+$$` \mathcal{L}(x_{1:n}) = -\log[p(x^*_{n+1:n+H}|x_{1:n})] `$$
+
+Thus, the task of optimizing our adversarial suffix can be written as the optimization problem
+
+$$ \min{x_{T \in \{1,...,V\}^{|I|}}} \mathcal{L}(x_{1:n}) $$
+
+where $` I \subset \{1, ..., n\} `$ denotes the indices of the adversarial suffix tokens in the LLM input.
+
+
+
 # Spencer's Notes
 I cloned the LLM attacks repo [here](https://github.com/llm-attacks/llm-attacks) and the RLHF Trojan Competition repo [here](https://github.com/ethz-spylab/rlhf_trojan_competition). 
 
