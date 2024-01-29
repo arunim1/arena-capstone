@@ -28,6 +28,7 @@ $$ \min{x_{T \in \{1,...,V\}^{|I|}}} \mathcal{L}(x_{1:n}) $$
 
 where $` I \subset \{1, ..., n\} `$ denotes the indices of the adversarial suffix tokens in the LLM input.
 
+(This is the same as [Cross Entropy Loss](https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html))
 
 
 # Spencer's Notes
