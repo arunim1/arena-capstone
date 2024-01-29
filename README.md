@@ -5,7 +5,11 @@ tokens to attack the model.
 
 **Query Generation:** If you prompt the model with the beginning of a valid response "Awesome, here's the answer!" it puts the model into a *mode* that switches its response type.
 
-**Greedy/Gradient-based discreted optimization:** Similar to [AutoPrompt](https://arxiv.org/abs/2010.15980)
+**Greedy/Gradient-based discreted optimization:** Similar to [AutoPrompt](https://arxiv.org/abs/2010.15980) (except all tokens are searched over), the adversarial suffix is chosen by optimize over discrete tokens to maximize the log likelihood of the attack succeeding.
+
+## Loss Function
+
+
 
 # Spencer's Notes
 I cloned the LLM attacks repo [here](https://github.com/llm-attacks/llm-attacks) and the RLHF Trojan Competition repo [here](https://github.com/ethz-spylab/rlhf_trojan_competition). 
