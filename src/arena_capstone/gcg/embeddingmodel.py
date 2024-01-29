@@ -4,6 +4,14 @@ import torch.nn.functional as F
 from jaxtyping import Float, Int, Bool
 from typing import List
 from torch import Tensor
+from dataclasses import dataclass
+
+
+@dataclass
+class Batch:
+    embeddings: Float[Tensor, "batch seq d_model"]
+    target_mask: Bool[Tensor, "batch seq"]
+    suffix_tensor: Float[Tensor, "suffix_length d_vocab"]
 
 
 class EmbeddingFriendlyModel:
@@ -24,7 +32,7 @@ class EmbeddingFriendlyModel:
         prefixes: List[Int[Tensor, "prefix_lens"]],
         suffix_tokens: Int[Tensor, "suffix_len"],
         targets: List[Int[Tensor, "target_lens"]],
-    ):
+    ) -> Batch:
         """
         prefixes: Int[Tensor, "batch prefix_len"]
                 prefix tokens
@@ -85,7 +93,12 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
             )
             sequences.append(sequence)
             masks.append(mask)
-        return torch.stack(sequences), torch.stack(masks), hot_suffix
+        batch = Batch(
+            embeddings=torch.stack(sequences),
+            target_mask=torch.stack(masks),
+            suffix_tensor=hot_suffix,
+        )
+        return batch
 
     def _splice(
         self,

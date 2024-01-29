@@ -1,3 +1,7 @@
+print("deprecated hooks based approach, use embeddingmodel.py instead")
+
+assert False
+
 from unpythonic import box
 from typing import List, Tuple, Union
 from jaxtyping import Float, Int, Bool

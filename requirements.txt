@@ -10,4 +10,3 @@ pandas
 torch
 transformers==4.37.2
 # llm-attacks @ git+https://github.com/llm-attacks/llm-attacks@main
-unpythonic

@@ -11,9 +11,9 @@ from dataclasses import dataclass
 
 @dataclass
 class Batch:
-    tokenized: Int[Tensor, "batch seq d_model"]
+    embeddings: Float[Tensor, "batch seq d_model"]
     target_mask: Bool[Tensor, "batch seq"]
-    suffix_tensor: Float[Tensor, "suffix_length d_model"]
+    suffix_tensor: Float[Tensor, "suffix_length d_vocab"]
 
 
 class BatchPreparer:

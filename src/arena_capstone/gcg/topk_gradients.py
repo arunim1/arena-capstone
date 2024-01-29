@@ -8,13 +8,17 @@ import torch
 from functools import partial
 from transformers import AutoModelForCausalLM
 from yaml import Token
-from wrappedmodel import EmbeddingFriendlyCausalForLM, EmbeddingFriendlyModel
+from arena_capstone.gcg.embeddingmodel import (
+    EmbeddingFriendlyCausalForLM,
+    EmbeddingFriendlyModel,
+)
 
 
 class TokenGradients:
     def __init__(
         self,
         model: AutoModelForCausalLM,
+        suffix: Int[Tensor, "batch seq"],
         embedding_model: Optional[EmbeddingFriendlyModel],
         capture_one_hot=True,
         capture_embeddings=False,
@@ -27,44 +31,13 @@ class TokenGradients:
             self.add_capture_one_hot_hook()
         if capture_embeddings:
             self.add_capture_embeddings_hook()
-        self.captured_embeddings = box()
-        self.captured_one_hot = box()
+
+        self.suffix = suffix
         self.embedding_model = (
             EmbeddingFriendlyCausalForLM(model)
             if embedding_model is None
             else embedding_model
         )
-
-    def add_capture_one_hot_hook(self):
-        hook = partial(
-            TokenGradients._capture_embedding_hook,
-            captured_embeddings=self.captured_embeddings,
-        )
-        self.model.get_input_embeddings().register_forward_hook(hook)
-
-    def add_capture_embeddings_hook(self):
-        hook = partial(
-            TokenGradients._capture_embedding_hook,
-            captured_embeddings=self.captured_embeddings,
-        )
-        self.model.get_input_embeddings().register_forward_hook(hook)
-
-    def top_k_substitutions(
-        self,
-        tokens: Int[Tensor, "batch seq"],
-        targets_mask: Bool[Tensor, "batch seq"],
-        prefixes_mask,
-        k: int,
-    ):
-
-        k = self.k if k is None else k
-        embedded_tokens = self.model.embeddings(tokens)
-        embedded_tokens.requires_grad = True
-        logits = self.model(embedded_tokens)
-
-        target_logprobs = logits[
-            targets_mask
-        ]  # this doesn't work bc targets are variable length
 
     def get_loss(
         self,
@@ -94,23 +67,26 @@ class TokenGradients:
         return loss
 
     def get_token_gradients(self, input_tokens, target_tokens, target_mask):
-        embeddings = self.captured_embeddings.x
         logits = self.model(input_tokens).logits
         loss = self.get_loss()
         loss.backward()
         return embeddings.grad
 
-    @staticmethod
-    def _capture_one_hot_hook(module, input, output, captured_embeddings: box):
-        out = module()
-        out = output.detach().clone()
-        out.requires_grad = True
-        captured_embeddings << out
-        return out
 
-    @staticmethod
-    def _capture_embedding_hook(module, input, output, captured_embeddings: box):
-        out = output.detach().clone()
-        out.requires_grad = True
-        captured_embeddings << out
-        return out
+class TopKGradients:
+    def top_k_substitutions(
+        self,
+        tokens: Int[Tensor, "batch seq"],
+        targets_mask: Bool[Tensor, "batch seq"],
+        prefixes_mask,
+        k: int,
+    ):
+
+        k = self.k if k is None else k
+        embedded_tokens = self.model.embeddings(tokens)
+        embedded_tokens.requires_grad = True
+        logits = self.model(embedded_tokens)
+
+        target_logprobs = logits[
+            targets_mask
+        ]  # this doesn't work bc targets are variable length
