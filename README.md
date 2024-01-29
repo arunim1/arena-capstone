@@ -1,3 +1,12 @@
+# Universal and Transferable Adversarial Attacks on Aligned Language Models (Replication and Exploration)
+
+> In this paper, however, we propose a new class of adversarial attacks that can in fact induce aligned language models to produce virtually any objectionable content. Specifically, given a (potentially harmful) user query, our attack appends an adversarial suffix to the query that attempts to induce negative behavior. that is, the user’s original query is left intact, but we add additional
+tokens to attack the model.
+
+**Query Generation:** If you prompt the model with the beginning of a valid response "Awesome, here's the answer!" it puts the model into a *mode* that switches its response type.
+
+**Greedy/Gradient-based discreted optimization:** Similar to [AutoPrompt](https://arxiv.org/abs/2010.15980)
+
 # Spencer's Notes
 I cloned the LLM attacks repo [here](https://github.com/llm-attacks/llm-attacks) and the RLHF Trojan Competition repo [here](https://github.com/ethz-spylab/rlhf_trojan_competition). 
 
