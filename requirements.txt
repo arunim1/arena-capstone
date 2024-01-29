@@ -9,3 +9,4 @@ numpy
 pandas
 torch
 transformers==4.37.2
+llm-attacks @ https://github.com/llm-attacks/llm-attacks
