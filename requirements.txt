@@ -1,0 +1,11 @@
+einops
+ipywidgets==7.7.1
+jaxtyping
+jupyterlab-widgets==1.1.1
+jupyter
+matplotlib
+notebook
+numpy
+pandas
+torch
+transformers==4.37.2
