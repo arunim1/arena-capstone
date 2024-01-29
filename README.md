@@ -20,7 +20,7 @@ $$ p(x_{n+1:n+H}|x_{1:n}) = \prod_{i=1}^{H} p(x_{n+i}|x_{1:n+i-1}) $$
 
 Under this notation, the adversarial loss we concerned are with is simply the (negative log) probability of some target sequences of tokens $` x^*_{n+1:n+H} `$ (i.e., representing the phrase "Sure, here is how to build a bomb.")
 
-$$ \mathcal{L}(x_{1:n}) = - \log p(x^*_{n+1:n+H}|x_{1:n}) $$
+$$` \mathcal{L}(x_{1:n}) = -\log[p(x^*_{n+1:n+H}|x_{1:n})] `$$
 
 Thus, the task of optimizing our adversarial suffix can be written as the optimization problem
 
