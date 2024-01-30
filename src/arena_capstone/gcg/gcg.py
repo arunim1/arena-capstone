@@ -28,7 +28,7 @@ class GCGConfig:
     prefix_str: str
     target_str: str
     batch_size: int
-    device = "cuda"
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
     T: int = 1000
     modelname: str = "gpt2"
     use_wandb: bool = False
@@ -144,9 +144,9 @@ def generate(gcg: GCG):
 
 def main():
     cfg = GCGConfig(
-        suffix=torch.randint(0, 50257, (10,), device="cuda"),
-        prefix_str="The cat is a type of",
-        target_str=" I hate that",
+        suffix=torch.randint(0, 50257, (6,)),
+        prefix_str="The cat",
+        target_str=" is a dawg",
         batch_size=50,
         T=200,
         k=300,

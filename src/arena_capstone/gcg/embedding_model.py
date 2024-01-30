@@ -54,7 +54,7 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
     def __init__(self, model: PreTrainedModel):
         self.model = model
 
-    def embed(self, tokens_or_onehot, start_position=0, onehot=False, positional=False):
+    def embed(self, tokens_or_onehot, start_position=0, onehot=False):
         seq_len = tokens_or_onehot.shape[0]
         dprint("seq_len", seq_len, start_position)
         dprint("shape", tokens_or_onehot.shape)
@@ -62,13 +62,7 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
             we = tokens_or_onehot @ self.model.transformer.wte.weight
         else:
             we = self.model.transformer.wte(tokens_or_onehot)
-        if not positional:
-            return we.unsqueeze(0)
-        wp = self.model.transformer.wpe(
-            torch.arange(start_position, seq_len + start_position).reshape(1, seq_len)
-        )
-        dprint("we/wp", we.shape, wp.shape)
-        return we + wp
+        return we.unsqueeze(0)
 
     def forward_from_embed(self, embed):
         return self.model(inputs_embeds=embed)
@@ -222,6 +216,11 @@ def main(model, embedding_model):
         )
 
         dprint("success")
+
+
+def dprint(*args, **kwargs):
+    if DEBUG:
+        print(*args, **kwargs)
 
 
 if __name__ == "__main__":
