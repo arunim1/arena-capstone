@@ -4,7 +4,7 @@ import torch
 from transformers import AutoModelForCausalLM, PreTrainedModel
 import torch.nn.functional as F
 from jaxtyping import Float, Int, Bool
-from typing import List
+from typing import List, Optional
 from torch import Tensor
 from dataclasses import dataclass
 
@@ -16,7 +16,7 @@ class Batch:
     embeddings: Float[Tensor, "batch seq d_model"]
     target_mask: Bool[Tensor, "batch seq"]
     suffix_tensor: Float[Tensor, "suffix_length d_vocab"]
-    logits: Float[Tensor, "batch seq vocab"]
+    logits: Optional[Float[Tensor, "batch seq vocab"]]
 
 
 class EmbeddingFriendlyModel:
@@ -145,7 +145,7 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
         mask[target_start:seq_length] = True
         return sequence, mask
 
-    def suffix_to_hot(self, target_tokens: Int[Tensor, "batch suffix_len"]):
+    def suffix_to_hot(self, target_tokens: Int[Tensor, "suffix_len"]):
         """
         target_tokens: Int[Tensor, "batch suffix_len"]
                 suffix tokens
@@ -153,6 +153,7 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
         returns: Int[Tensor, "batch suffix_len vocab"]
                 the one-hot suffix tokens
         """
+        assert target_tokens.ndim == 1
         hot = F.one_hot(target_tokens, num_classes=self.model.config.vocab_size)
         hot = hot.float()
         hot.requires_grad = True
