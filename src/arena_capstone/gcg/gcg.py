@@ -157,8 +157,7 @@ def main():
     gcg = GCG(cfg=cfg, model=AutoModelForCausalLM.from_pretrained("gpt2"))
     gcg.gcg(print_between=(not cfg.use_wandb))
     generate(gcg)
-    generate(gcg)
-    generate(gcg)
+    
     # m: PreTrainedModel = gcg.model
     # tokens = torch.cat(
     #     [
