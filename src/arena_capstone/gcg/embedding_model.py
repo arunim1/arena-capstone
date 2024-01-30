@@ -19,6 +19,13 @@ class EmbeddedBatch:
     logits: Optional[Float[Tensor, "batch seq vocab"]]
 
 
+@dataclass
+class TokensBatch:
+    tokens: Int[Tensor, "batch seq"]
+    target_mask: Bool[Tensor, "batch seq"]
+    logits: Optional[Float[Tensor, "batch seq vocab"]]
+
+
 class EmbeddingFriendlyModel:
     def embed(self, tokens):
         pass
@@ -166,6 +173,74 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
         return suffix.shape[0] + max(
             [plen + tlen for plen, tlen in zip(prefix_lengths, target_lengths)]
         )
+
+    def batch_for_step2(
+        self,
+        prefixes: List[Int[Tensor, "prefix_lens"]],  # m_c list len
+        suffix_tokens: Int[Tensor, "batch_size suffix_len"],
+        targets: List[Int[Tensor, "target_lens"]],  # m_c list len
+        get_logits=False,
+    ):
+        batch_size = suffix_tokens.shape[0]
+        all_sequences = []
+        all_masks = []
+        for b in range(batch_size):
+            sequences, masks = self.splice_suffix_to_tokens(
+                prefixes, suffix_tokens[b], targets, get_logits=False
+            )
+            all_sequences.append(sequences)
+            all_masks.append(masks)
+        sequences, masks
+        batch = TokensBatch(
+            tokens=torch.cat(sequences, dim=0),
+            target_mask=torch.cat(masks, dim=0),
+            logits=None,
+        )
+        assert batch.target_mask.ndim == 2
+        assert batch.tokens.ndim == 2
+        assert batch.target_mask.shape == batch.tokens.shape
+        if get_logits:
+            batch.logits = self.model(batch.tokens).logits
+        return batch
+
+    def _splice_tokens(
+        self,
+        prefix_tokens: Int[Tensor, "prefix_len"],
+        suffix_tokens: Int[Tensor, "suffix_len"],
+        target_tokens: Int[Tensor, "target_len"],
+        sequence_length: int,
+    ):
+        suffix_start = prefix_tokens.shape[0]
+        target_start = suffix_start + suffix_tokens.shape[0]
+        seq_length = target_start + target_tokens.shape[0]
+        padding = torch.zeros(
+            sequence_length - seq_length, dtype=torch.long, device=prefix_tokens.device
+        )
+        assert sequence_length - seq_length >= 0
+        sequence = torch.cat(
+            [prefix_tokens, suffix_tokens, target_tokens, padding], dim=1
+        )
+        mask = torch.zeros(sequence_length, dtype=torch.bool, device=sequence.device)
+        mask[target_start:seq_length] = True
+        return sequence, mask
+
+    def splice_suffix_to_tokens(
+        self,
+        prefixes: List[Int[Tensor, "prefix_len"]],
+        suffix_tokens: Int[Tensor, "suffix_len"],
+        targets: List[Int[Tensor, "target_len"]],
+        get_logits=False,
+    ) -> TokensBatch:
+        sequence_length = self.get_max_len(prefixes, suffix_tokens, targets)
+        sequences = []
+        masks = []
+        for prefix_tokens, target_tokens in zip(prefixes, targets):
+            sequence, mask = self._splice_tokens(
+                prefix_tokens, suffix_tokens, target_tokens, sequence_length
+            )
+            sequences.append(sequence)
+            masks.append(mask)
+        return torch.cat(sequences, dim=0), torch.stack(masks)
 
 
 def dprint(*args, **kwargs):
