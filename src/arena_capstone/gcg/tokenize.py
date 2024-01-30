@@ -2,6 +2,7 @@ from typing import List
 from torch import Tensor
 from jaxtyping import Float, Int, Bool
 import torch
+from transformers import AutoTokenizer
 
 
 class Tokenizer:
@@ -55,3 +56,8 @@ class Tokenizer:
 
     def _to_strings(self, tokens: List[Int[Tensor, "seq"]]) -> List[str]:
         raise NotImplementedError("Subclass must implement this method")
+
+
+class GPT2Tokenizer(Tokenizer):
+    def __init__(self, tokenizer):
+        pass

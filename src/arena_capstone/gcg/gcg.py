@@ -20,6 +20,8 @@ import torch
 import einops
 import wandb
 
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
 
 @dataclass
 class GCGConfig:
@@ -28,7 +30,7 @@ class GCGConfig:
     prefix_str: str
     target_str: str
     batch_size: int
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    device: str = DEVICE
     T: int = 1000
     modelname: str = "gpt2"
     use_wandb: bool = False
@@ -144,7 +146,7 @@ def generate(gcg: GCG):
 
 def main():
     cfg = GCGConfig(
-        suffix=torch.randint(0, 50257, (6,)),
+        suffix=torch.randint(0, 50257, (6,), device=DEVICE),
         prefix_str="The cat",
         target_str=" is a dawg",
         batch_size=50,

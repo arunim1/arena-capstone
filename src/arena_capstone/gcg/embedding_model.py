@@ -192,10 +192,11 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
             all_masks.append(masks)
         sequences, masks
         batch = TokensBatch(
-            tokens=torch.cat(sequences, dim=0),
-            target_mask=torch.cat(masks, dim=0),
+            tokens=torch.cat(all_sequences, dim=0),
+            target_mask=torch.cat(all_masks, dim=0),
             logits=None,
         )
+        dprint("batch tokens shape", batch.tokens.shape)
         assert batch.target_mask.ndim == 2
         assert batch.tokens.ndim == 2
         assert batch.target_mask.shape == batch.tokens.shape
@@ -218,7 +219,7 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
         )
         assert sequence_length - seq_length >= 0
         sequence = torch.cat(
-            [prefix_tokens, suffix_tokens, target_tokens, padding], dim=1
+            [prefix_tokens, suffix_tokens, target_tokens, padding], dim=0
         )
         mask = torch.zeros(sequence_length, dtype=torch.bool, device=sequence.device)
         mask[target_start:seq_length] = True
@@ -238,9 +239,12 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
             sequence, mask = self._splice_tokens(
                 prefix_tokens, suffix_tokens, target_tokens, sequence_length
             )
+            assert sequence.ndim == 1
+            assert mask.ndim == 1
             sequences.append(sequence)
             masks.append(mask)
-        return torch.cat(sequences, dim=0), torch.stack(masks)
+
+        return torch.stack(sequences), torch.stack(masks)
 
 
 def dprint(*args, **kwargs):
