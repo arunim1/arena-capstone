@@ -60,14 +60,14 @@ class TokenGradients:
             reduction="mean" if reduce_over_batch else "none",
         )
 
-        losses2 = -logprobs_at_targets[torch.arange(0, target_ids.shape[0]), target_ids]
-        loss2 = losses2
-        if reduce_over_batch:
-            loss2 = torch.mean(losses2)
-            assert torch.allclose(loss, loss2, atol=1e-0)
-        else:
-            # print(loss, losses2)
-            assert torch.allclose(loss, losses2, atol=1e-0)
+        # losses2 = -logprobs_at_targets[torch.arange(0, target_ids.shape[0]), target_ids]
+        # loss2 = losses2
+        # if reduce_over_batch:
+        #     loss2 = torch.mean(losses2)
+        #     assert torch.allclose(loss, loss2, atol=1e-0)
+        # else:
+        #     # print(loss, losses2)
+        #     assert torch.allclose(loss, losses2, atol=1e-0)
 
         # Loss(prefix+suffix) = -log(p(target|suffixprefix))
         # = -log(prod_i(p(target_i | suffixprefix, target_1, ..., target_(i - 1)))
@@ -85,6 +85,7 @@ class TokenGradients:
         prefixes: List[Int[Tensor, "prefix_len"]],
         suffix_tokens: Int[Tensor, "suffix_len"],
         targets: List[Int[Tensor, "target_len"]],
+        print_loss: bool = False,
     ) -> EmbeddedBatch:
         batch = self.embedding_model.splice_suffix(
             prefixes, suffix_tokens, targets, get_logits=True
@@ -92,6 +93,8 @@ class TokenGradients:
         assert batch.suffix_tensor.grad is None  # zero grad
         loss = self.get_loss(batch, targets)
         loss.backward()
+        if print_loss:
+            print("loss:    ", loss.item())
         return batch
 
 

@@ -1,4 +1,4 @@
-# Glen Taggart / nqgl if there are any issues/questions
+# Glen Taggart (nqgl) if there are any issues/questions
 
 import torch
 from transformers import AutoModelForCausalLM, PreTrainedModel
@@ -179,10 +179,8 @@ def dprint(*args, **kwargs):
         print(*args, **kwargs)
 
 
-def main():
-    model = AutoModelForCausalLM.from_pretrained("gpt2")
+def main(model, embedding_model):
     with torch.inference_mode():
-        embedding_model = EmbeddingFriendlyCausalForLM(model)
         prefixes = [
             torch.randint(0, model.config.vocab_size, (10,)),
             torch.randint(0, model.config.vocab_size, (5,)),
@@ -227,4 +225,6 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    model = AutoModelForCausalLM.from_pretrained("gpt2")
+    embedding_model = EmbeddingFriendlyCausalForLM(model)
+    main(model, embedding_model)
