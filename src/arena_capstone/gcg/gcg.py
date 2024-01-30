@@ -25,7 +25,7 @@ class GCGConfig:
     prefix_str: str
     target_str: str
     batch_size: int
-    device = "cuda"
+    device: str = "cuda"
     T: int = 1000
     modelname: str = "gpt2"
 

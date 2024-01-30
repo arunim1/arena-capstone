@@ -1,5 +1,6 @@
 # Glen Taggart / nqgl if there are any issues/questions
 
+# %%
 from arena_capstone.gcg.embedding_model import (
     EmbeddedBatch,
 )
@@ -60,3 +61,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# %%
