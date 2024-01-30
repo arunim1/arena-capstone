@@ -3,7 +3,6 @@ import transformers
 
 from arena_capstone.gcg.embedding_model import EmbeddingFriendlyCausalForLM
 
-
 model: transformers.PreTrainedModel = transformers.AutoModelForCausalLM.from_pretrained(
     "gpt2"
 )
@@ -89,11 +88,12 @@ print(a.grad)  # tensor([1., 1.])
 print(b.grad)  # tensor([1., 1., 1.])
 
 
+from dataclasses import dataclass
+
+import torch
 # %%
 from jaxtyping import Float
 from torch import Tensor
-import torch
-from dataclasses import dataclass
 
 
 @dataclass

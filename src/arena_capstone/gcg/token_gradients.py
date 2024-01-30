@@ -1,21 +1,20 @@
 # Glen Taggart / nqgl if there are any issues/questions
 
 
+from functools import partial
 from tokenize import TokenInfo
-from typing import List, Tuple, Union, Optional
-from jaxtyping import Float, Int, Bool
-from torch import Tensor
-import torch
+from typing import List, Optional, Tuple, Union
 
+import torch
 # from nqgl.mlutils.norepr import fastpartial
 import torch.nn.functional as F
-from functools import partial
+from jaxtyping import Bool, Float, Int
+from torch import Tensor
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from arena_capstone.gcg.embedding_model import (
-    EmbeddingFriendlyCausalForLM,
-    EmbeddingFriendlyModel,
-    EmbeddedBatch,
-)
+
+from arena_capstone.gcg.embedding_model import (EmbeddedBatch,
+                                                EmbeddingFriendlyCausalForLM,
+                                                EmbeddingFriendlyModel)
 
 DEBUG = False
 

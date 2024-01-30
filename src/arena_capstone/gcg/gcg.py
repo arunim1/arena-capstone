@@ -1,26 +1,25 @@
+from dataclasses import dataclass
 from json import load
-import arena_capstone.gcg.topk_gradients as topkgrad
-from arena_capstone.gcg.embedding_model import EmbeddingFriendlyCausalForLM
+from typing import List, Optional, Set, Tuple, Union
 
+import einops
+import torch
+import transformers
+from jaxtyping import Bool, Float, Int
+from torch import Tensor
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from arena_capstone.gcg.embedding_model import (
-    EmbeddingFriendlyCausalForLM,
-    EmbeddingFriendlyModel,
-    EmbeddedBatch,
-)
+import arena_capstone.gcg.topk_gradients as topkgrad
+from arena_capstone.gcg.embedding_model import (EmbeddedBatch,
+                                                EmbeddingFriendlyCausalForLM,
+                                                EmbeddingFriendlyModel)
 from arena_capstone.gcg.token_gradients import TokenGradients
-import transformers
-from typing import List, Set, Tuple, Union, Optional
-from jaxtyping import Float, Int, Bool
-from torch import Tensor
-from dataclasses import dataclass
-import torch
-import einops
 
+from transformers import LlamaModel, LlamaConfig
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+configuration = LlamaConfig()
 
 @dataclass
 class GCGConfig:
@@ -127,7 +126,7 @@ def main():
         T=5000,
         k=50,
     )
-    gcg = GCG(cfg=cfg, model=AutoModelForCausalLM.from_pretrained("llama"))
+    gcg = GCG(cfg=cfg, model=LlamaModel(configuration))
     gcg.gcg(print_between=True)
 
 

@@ -1,13 +1,13 @@
 # Glen Taggart / nqgl if there are any issues/questions
 
 # %%
-from arena_capstone.gcg.embedding_model import (
-    EmbeddedBatch,
-)
-from typing import List, Set, Tuple, Union, Optional
-from jaxtyping import Float, Int, Bool
-from torch import Tensor
+from typing import List, Optional, Set, Tuple, Union
+
 import torch
+from jaxtyping import Bool, Float, Int
+from torch import Tensor
+
+from arena_capstone.gcg.embedding_model import EmbeddedBatch
 
 
 def top_k_substitutions(
