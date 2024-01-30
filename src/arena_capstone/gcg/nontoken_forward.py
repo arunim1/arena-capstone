@@ -1,8 +1,6 @@
-print("deprecated hooks based approach, use embeddingmodel.py instead")
+assert False and "now that embeddingmodel.py works, this is obsolete"
 
-assert False
 
-from unpythonic import box
 from typing import List, Tuple, Union
 from jaxtyping import Float, Int, Bool
 from torch import Tensor
@@ -12,39 +10,56 @@ import torch
 from functools import partial
 from transformers import AutoModelForCausalLM
 from yaml import Token
+from unpythonic import box
 
 
-class WrappedModel:
+class EmbeddingHookModel:
     def __init__(
         self,
         model: AutoModelForCausalLM,
-        capture_one_hot=True,
+        capture_one_hot=False,
         capture_embeddings=False,
+        replace_embeddings=False,
     ):
         """ """
         self.model = model
         assert callable(model)
-        assert capture_one_hot or capture_embeddings
+        assert capture_one_hot or capture_embeddings or replace_embeddings
+
+        self.captured_embeddings = box()
+        self.captured_one_hot = box()
+        self.replacement_embeddings = box()
         if capture_one_hot:
             self.add_capture_one_hot_hook()
         if capture_embeddings:
             self.add_capture_embeddings_hook()
-        self.captured_embeddings = box()
-        self.captured_one_hot = box()
+        if replace_embeddings:
+            self.add_replace_embeddings_hook()
 
     def add_capture_one_hot_hook(self):
         hook = partial(
-            TokenGradients._capture_embedding_hook,
+            EmbeddingHookModel._capture_embedding_hook,
             captured_embeddings=self.captured_embeddings,
         )
         self.model.get_input_embeddings().register_forward_hook(hook)
 
     def add_capture_embeddings_hook(self):
         hook = partial(
-            TokenGradients._capture_embedding_hook,
+            EmbeddingHookModel._capture_embedding_hook,
             captured_embeddings=self.captured_embeddings,
         )
         self.model.get_input_embeddings().register_forward_hook(hook)
+
+    def add_replace_embeddings_hook(self):
+        hook = partial(
+            EmbeddingHookModel._replace_embeddings_hook,
+            replacement_embeddings=self.replacement_embeddings,
+        )
+        self.model.get_input_embeddings().register_forward_hook(hook)
+
+    def forward_with_embeddings(self, embeddings, tokens):
+        self.replacement_embeddings << embeddings
+        return self.model(tokens)
 
     def top_k_substitutions(
         self,
@@ -111,3 +126,14 @@ class WrappedModel:
         out.requires_grad = True
         captured_embeddings << out
         return out
+
+    @staticmethod
+    def _replace_embeddings_hook(module, input, output, replacement_embeddings: box):
+        assert replacement_embeddings.x is not None
+        assert replacement_embeddings.x.shape == output.shape
+        out = replacement_embeddings.x
+        return out
+
+
+def main():
+    emh = EmbeddingHookModel(model, replace_embeddings=True, capture_embeddings=True)

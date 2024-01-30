@@ -1,8 +1,7 @@
 # %%
-from math import e
 import transformers
 
-from arena_capstone.gcg.wrappedmodel import WrappedCausalForLM
+from arena_capstone.gcg.embeddingmodel import EmbeddingFriendlyCausalForLM
 
 
 model: transformers.PreTrainedModel = transformers.AutoModelForCausalLM.from_pretrained(
@@ -111,10 +110,10 @@ b2 = Batch(embeddings={}, logits="hi")
 # model.embed
 
 # %%
-from arena_capstone.gcg.wrappedmodel import WrappedCausalForLM
+from arena_capstone.gcg.embeddingmodel import EmbeddingFriendlyCausalForLM
 
 # %%
-m = WrappedCausalForLM(model)
+m = EmbeddingFriendlyCausalForLM(model)
 t = torch.randint(0, model.config.vocab_size, (1, 10))
 
 e = m.embed(t)
@@ -154,3 +153,9 @@ ehot.shape
 
 torch.allclose(wte.weight[t], wte(t))
 # %%
+e.shape
+# %%
+
+
+a = torch.arange(0, 25).reshape(5, 5)
+m = F.dropout(torch.ones(5, 5), p=0.8, training=True)
