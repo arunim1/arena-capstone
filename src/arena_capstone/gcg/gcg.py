@@ -1,3 +1,4 @@
+from json import load
 import arena_capstone.gcg.topk_gradients as topkgrad
 from arena_capstone.gcg.embedding_model import EmbeddingFriendlyCausalForLM
 
@@ -25,7 +26,7 @@ class GCGConfig:
     prefix_str: str
     target_str: str
     batch_size: int
-    device: str = "cuda"
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
     T: int = 1000
     modelname: str = "gpt2"
 
@@ -115,7 +116,7 @@ class GCG:
 
 def main():
     cfg = GCGConfig(
-        suffix=torch.randint(0, 50257, (6,), device="cuda"),
+        suffix=torch.randint(0, 50257, (6,)),
         prefix_str="The cat",
         target_str=" is a dawg",
         batch_size=50,
