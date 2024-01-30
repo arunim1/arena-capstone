@@ -1,7 +1,7 @@
 # %%
 import transformers
 
-from arena_capstone.gcg.embeddingmodel import EmbeddingFriendlyCausalForLM
+from arena_capstone.gcg.embedding_model import EmbeddingFriendlyCausalForLM
 
 
 model: transformers.PreTrainedModel = transformers.AutoModelForCausalLM.from_pretrained(
@@ -110,7 +110,7 @@ b2 = Batch(embeddings={}, logits="hi")
 # model.embed
 
 # %%
-from arena_capstone.gcg.embeddingmodel import EmbeddingFriendlyCausalForLM
+from arena_capstone.gcg.embedding_model import EmbeddingFriendlyCausalForLM
 
 # %%
 m = EmbeddingFriendlyCausalForLM(model)
@@ -159,3 +159,5 @@ e.shape
 
 a = torch.arange(0, 25).reshape(5, 5)
 m = F.dropout(torch.ones(5, 5), p=0.8, training=True)
+a[m > 0]
+# %%

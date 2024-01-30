@@ -1,5 +1,5 @@
-from re import L
-from regex import P
+# Glen Taggart / nqgl if there are any issues/questions
+
 import torch
 from transformers import AutoModelForCausalLM, PreTrainedModel
 import torch.nn.functional as F
@@ -7,6 +7,8 @@ from jaxtyping import Float, Int, Bool
 from typing import List
 from torch import Tensor
 from dataclasses import dataclass
+
+DEBUG = False
 
 
 @dataclass
@@ -54,7 +56,8 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
 
     def embed(self, tokens_or_onehot, start_position=0, onehot=False, positional=False):
         seq_len = tokens_or_onehot.shape[0]
-        print("seq_len", seq_len, start_position)
+        dprint("seq_len", seq_len, start_position)
+        dprint("shape", tokens_or_onehot.shape)
         if onehot:
             we = tokens_or_onehot @ self.model.transformer.wte.weight
         else:
@@ -64,7 +67,7 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
         wp = self.model.transformer.wpe(
             torch.arange(start_position, seq_len + start_position).reshape(1, seq_len)
         )
-        print("we/wp", we.shape, wp.shape)
+        dprint("we/wp", we.shape, wp.shape)
         return we + wp
 
     def forward_from_embed(self, embed):
@@ -100,12 +103,17 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
             )
             sequences.append(sequence)
             masks.append(mask)
-            print(sequence.shape, mask.shape)
+            dprint(sequence.shape, mask.shape)
         batch = Batch(
             embeddings=torch.cat(sequences, dim=0),
             target_mask=torch.stack(masks),
             suffix_tensor=hot_suffix,
+            logits=None,
         )
+        assert batch.target_mask.ndim == 2
+        assert batch.embeddings.ndim == 3
+
+        assert batch.target_mask.shape[0:2] == batch.embeddings.shape[0:2]
         if get_logits:
             batch.logits = self.forward_from_embed(batch.embeddings).logits
         return batch
@@ -120,7 +128,7 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
         suffix_start = prefix_tokens.shape[0]
         target_start = suffix_start + hot_suffix.shape[0]
         seq_length = target_start + target_tokens.shape[0]
-        print(suffix_start, target_start, seq_length)
+        dprint(suffix_start, target_start, seq_length)
         prefix = self.embed(prefix_tokens, start_position=0)
         suffix = self.embed(hot_suffix, start_position=suffix_start, onehot=True)
         target = self.embed(target_tokens, start_position=target_start)
@@ -130,9 +138,10 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
             .expand(-1, self.model.config.hidden_size)
             .unsqueeze(0)
         )
-        print(prefix.shape, suffix.shape, target.shape, padding.shape)
+        dprint(prefix.shape, suffix.shape, target.shape, padding.shape)
         sequence = torch.cat([prefix, suffix, target, padding], dim=1)
-        mask = torch.zeros_like(sequence, dtype=torch.bool)
+        mask = torch.zeros(sequence_length, dtype=torch.bool, device=sequence.device)
+        dprint("mask", target_start, seq_length)
         mask[target_start:seq_length] = True
         return sequence, mask
 
@@ -164,6 +173,11 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
         )
 
 
+def dprint(*args, **kwargs):
+    if DEBUG:
+        print(*args, **kwargs)
+
+
 def main():
     model = AutoModelForCausalLM.from_pretrained("gpt2")
     with torch.inference_mode():
@@ -180,7 +194,7 @@ def main():
             torch.randint(0, model.config.vocab_size, (5,)),
         ]
         batch = embedding_model.splice_suffix(prefixes, suffix, targets)
-        print(batch)
+        dprint(batch)
         targets[-1] = torch.cat(
             [targets[-1], torch.randint(0, model.config.vocab_size, (5,))]
         )
@@ -192,8 +206,8 @@ def main():
             dim=0,
         )
 
-        print("tokens", tokens.shape)
-        print("batch", batch.embeddings.shape)
+        dprint("tokens", tokens.shape)
+        dprint("batch", batch.embeddings.shape)
         response = model(tokens)
         logits = response.logits
         embed_logits = embedding_model.forward_from_embed(batch.embeddings).logits
@@ -208,7 +222,7 @@ def main():
             atol=1e-2,
         )
 
-        print("success")
+        dprint("success")
 
 
 if __name__ == "__main__":
