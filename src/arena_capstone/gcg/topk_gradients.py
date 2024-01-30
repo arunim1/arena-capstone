@@ -36,12 +36,4 @@ class TopKGradients:
         self,
         k: int,
     ):
-
-        k = self.k if k is None else k
-        embedded_tokens = self.model.embeddings(tokens)
-        embedded_tokens.requires_grad = True
-        logits = self.model(embedded_tokens)
-
-        target_logprobs = logits[
-            targets_mask
-        ]  # this doesn't work bc targets are variable length
+        raise NotImplementedError()
