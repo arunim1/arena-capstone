@@ -12,7 +12,7 @@ DEBUG = False
 
 
 @dataclass
-class Batch:
+class EmbeddedBatch:
     embeddings: Float[Tensor, "batch seq d_model"]
     target_mask: Bool[Tensor, "batch seq"]
     suffix_tensor: Float[Tensor, "suffix_length d_vocab"]
@@ -37,7 +37,7 @@ class EmbeddingFriendlyModel:
         prefixes: List[Int[Tensor, "prefix_lens"]],
         suffix_tokens: Int[Tensor, "suffix_len"],
         targets: List[Int[Tensor, "target_lens"]],
-    ) -> Batch:
+    ) -> EmbeddedBatch:
         """
         prefixes: Int[Tensor, "batch prefix_len"]
                 prefix tokens
@@ -79,7 +79,7 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
         suffix_tokens: Int[Tensor, "suffix_len"],
         targets: List[Int[Tensor, "target_len"]],
         get_logits=False,
-    ) -> Batch:
+    ) -> EmbeddedBatch:
         """
         prefixes: Int[Tensor, "batch prefix_len"]
                 prefix tokens
@@ -104,7 +104,7 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
             sequences.append(sequence)
             masks.append(mask)
             dprint(sequence.shape, mask.shape)
-        batch = Batch(
+        batch = EmbeddedBatch(
             embeddings=torch.cat(sequences, dim=0),
             target_mask=torch.stack(masks),
             suffix_tensor=hot_suffix,

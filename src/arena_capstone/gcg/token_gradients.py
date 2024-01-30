@@ -1,6 +1,7 @@
 # Glen Taggart / nqgl if there are any issues/questions
 
 
+from tokenize import TokenInfo
 from typing import List, Tuple, Union, Optional
 from jaxtyping import Float, Int, Bool
 from torch import Tensor
@@ -13,7 +14,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from arena_capstone.gcg.embedding_model import (
     EmbeddingFriendlyCausalForLM,
     EmbeddingFriendlyModel,
-    Batch,
+    EmbeddedBatch,
 )
 
 DEBUG = False
@@ -36,8 +37,9 @@ class TokenGradients:
 
     def get_loss(
         self,
-        batch: Batch,
+        batch: EmbeddedBatch,
         targets: List[Int[Tensor, "seq"]],
+        reduce_over_batch=True,
     ):
         # returns loss without backpropagating (because that would be a dumb design choice NGL)
         target_ids = torch.cat(targets, dim=0)
@@ -45,16 +47,31 @@ class TokenGradients:
         dprint(logprobs.shape, target_ids.shape, batch.target_mask.shape)
         dprint(logprobs[:, :-1][batch.target_mask[:, 1:]].shape)
         dprint(torch.sum(batch.target_mask))
-        loss = F.cross_entropy(logprobs[:, :-1][batch.target_mask[:, 1:]], target_ids)
-        alt = logprobs[:, :-1][batch.target_mask[:, 1:]]
-        dprint(alt.shape, target_ids.shape)
-        loss = torch.sum(alt[torch.arange(0, target_ids.shape[0]), target_ids])
 
-        # F.cross_entropy(logits[:, :-1][target_mask[:, 1:]], target_ids)
+        logprobs_at_targets = logprobs[:, :-1][batch.target_mask[:, 1:]]
         # sequence P S G G G
         # logits   S G G G 0
         # target   P S G G G
         # tmask    0 0 1 1 1
+
+        loss = F.cross_entropy(
+            logprobs_at_targets,
+            target_ids,
+            reduction="mean" if reduce_over_batch else "none",
+        )
+
+        losses2 = -logprobs_at_targets[torch.arange(0, target_ids.shape[0]), target_ids]
+        loss2 = losses2
+        if reduce_over_batch:
+            loss2 = torch.mean(losses2)
+            assert torch.allclose(loss, loss2, atol=1e-0)
+        else:
+            # print(loss, losses2)
+            assert torch.allclose(loss, losses2, atol=1e-0)
+
+        # Loss(prefix+suffix) = -log(p(target|suffixprefix))
+        # = -log(prod_i(p(target_i | suffixprefix, target_1, ..., target_(i - 1)))
+        # = -sum_i(log(p(target_i | suffixprefix, target_1, ..., target_(i - 1))))
 
         # target[tmask]         G G G
         # logits[:-1][tmask[1:]]G G G
@@ -68,11 +85,11 @@ class TokenGradients:
         prefixes: List[Int[Tensor, "prefix_len"]],
         suffix_tokens: Int[Tensor, "suffix_len"],
         targets: List[Int[Tensor, "target_len"]],
-    ) -> Batch:
+    ) -> EmbeddedBatch:
         batch = self.embedding_model.splice_suffix(
             prefixes, suffix_tokens, targets, get_logits=True
         )
-        batch.suffix_tensor.grad = None  # zero grad
+        assert batch.suffix_tensor.grad is None  # zero grad
         loss = self.get_loss(batch, targets)
         loss.backward()
         return batch
@@ -99,16 +116,17 @@ def main():
     tg = TokenGradients(
         model,
     )
+
     for i in range(100):
-        tok_grads = tg.get_token_gradients([prefix[0]], suffix, [target[0]])
-        # print(tok_grads.suffix_tensor.grad)
-        browndogmaybe = tok_grads.suffix_tensor.grad
+        tok_grads_batch = tg.get_token_gradients([prefix[0]], suffix, [target[0]])
+        # print(tok_grads_batch.suffix_tensor.grad)
+        browndogmaybe = tok_grads_batch.suffix_tensor.grad
         tokens = torch.argmin(browndogmaybe, dim=-1)
         # print(tokens)
         # print(tokenizer.decode(tg.suffix))
         print(tokenizer.decode(tokens + 1))
-        tok_grads.suffix_tensor.requires_grad = False
-        tok_grads.suffix_tensor.grad = None
+        tok_grads_batch.suffix_tensor.requires_grad = False
+        tok_grads_batch.suffix_tensor.grad = None
         suffix = tokens
 
 
