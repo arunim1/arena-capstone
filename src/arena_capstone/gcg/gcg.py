@@ -19,6 +19,9 @@ import torch
 import einops
 
 
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
 @dataclass
 class GCGConfig:
     suffix: Int[Tensor, "batch seq"]
@@ -26,7 +29,7 @@ class GCGConfig:
     prefix_str: str
     target_str: str
     batch_size: int
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    device: str = DEVICE
     T: int = 1000
     modelname: str = "gpt2"
 
@@ -116,14 +119,15 @@ class GCG:
 
 def main():
     cfg = GCGConfig(
-        suffix=torch.randint(0, 50257, (6,)),
+        suffix=torch.randint(0, 50257, (6,), device=DEVICE),
         prefix_str="The cat",
         target_str=" is a dawg",
+        modelname="llama",
         batch_size=50,
         T=5000,
         k=50,
     )
-    gcg = GCG(cfg=cfg, model=AutoModelForCausalLM.from_pretrained("gpt2"))
+    gcg = GCG(cfg=cfg, model=AutoModelForCausalLM.from_pretrained("llama"))
     gcg.gcg(print_between=True)
 
 

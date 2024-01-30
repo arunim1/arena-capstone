@@ -7,6 +7,8 @@ from jaxtyping import Float, Int, Bool
 from typing import List, Optional
 from torch import Tensor
 from dataclasses import dataclass
+from transformers import LlamaModel, LlamaPreTrainedModel, PreTrainedModel
+
 
 DEBUG = False
 
@@ -63,7 +65,7 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
         else:
             we = self.model.transformer.wte(tokens_or_onehot)
         return we.unsqueeze(0)
-      
+
     def forward_from_embed(self, embed):
         return self.model(inputs_embeds=embed)
 
@@ -218,6 +220,7 @@ def main():
 def dprint(*args, **kwargs):
     if DEBUG:
         print(*args, **kwargs)
-        
+
+
 if __name__ == "__main__":
     main()
