@@ -1,1 +1,4 @@
 *ARENA*
+/src/arena_capstone.egg-info
+.vscode/
+__pycache__/
