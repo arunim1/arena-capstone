@@ -66,7 +66,3 @@ The adversarial prompt will replace "! ! ! ! ! ! ! ! ! ! ! ! !" as it is learned
 
 1. Less work that a more bespoke approach.
 2. We get quickly to the most interesting part (in my opinion).
-
-## Misc.
-
-**You need to request access to LLaMA-2 from Meta%** and it could take **2 days** for it to be granted! You can do that [here](https://ai.meta.com/resources/models-and-libraries/llama-downloads/).
