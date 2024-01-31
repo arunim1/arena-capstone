@@ -15,7 +15,9 @@ from arena_capstone.gcg.embedding_model import (
     EmbeddingFriendlyCausalForLM,
     EmbeddingFriendlyModel,
     EmbeddedBatch,
+    TokensBatch,
 )
+import einops
 
 DEBUG = False
 
@@ -38,69 +40,71 @@ class TokenGradients:
     def get_loss(
         self,
         batch: EmbeddedBatch,
-        targets: List[Int[Tensor, "seq"]],
+        targets: Union[List[Int[Tensor, "seq"]], Int[Tensor, "seq"]],
         reduce_over_batch=True,
+        targets_is_single_tensor=False,
     ):
-        # returns loss without backpropagating (because that would be a dumb design choice NGL)
-        # logprobs = torch.log_softmax(batch.logits, dim=-1)
-        # dprint(logprobs.shape, target_ids.shape, batch.target_mask.shape)
-        # dprint(logits[:, :-1][batch.target_mask[:, 1:]].shape)
-        # dprint(torch.sum(batch.target_mask))
-
         # sequence P S G G G
         # logits   S G G G 0
         # target   P S G G G
         # tmask    0 0 1 1 1
+
         target_ids = torch.cat(targets, dim=0)
         logits_at_targets = batch.logits[:, :-1][batch.target_mask[:, 1:]]
-        # print(
-        #     "logits_at_targets",
-        #     logits_at_targets.shape,
-        #     "target_ids",
-        #     target_ids.shape,
-        #     logits_at_targets.dtype,
-        # )
+
         loss = F.cross_entropy(
             logits_at_targets,
             target_ids,
             reduction="mean" if reduce_over_batch else "none",
         )
 
-        # losses2 = -logits_at_targets[torch.arange(0, target_ids.shape[0]), target_ids]
-        # loss2 = losses2
-        # if reduce_over_batch:
-        #     loss2 = torch.mean(losses2)
-        #     assert torch.allclose(loss, loss2, atol=1e-0)
-        # else:
-        #     # print(loss, losses2)
-        #     assert torch.allclose(loss, losses2, atol=1e-0)
-
-        # Loss(prefix+suffix) = -log(p(target|suffixprefix))
-        # = -log(prod_i(p(target_i | suffixprefix, target_1, ..., target_(i - 1)))
-        # = -sum_i(log(p(target_i | suffixprefix, target_1, ..., target_(i - 1))))
-
-        # target[tmask]         G G G
-        # logits[:-1][tmask[1:]]G G G
-
-        # L(x[1:n]) = -log(p(x[n+1] | x[1:n))
-
         return loss
+
+    def get_loss_looping(
+        self,
+        batch: TokensBatch,
+        target: Int[Tensor, "seq"],
+    ):
+        """
+        get loss for when looping memory use optimization in UPO algorithm
+        """
+
+        low, high = batch.target_bounds
+
+        indexed = batch.logits[:, torch.arange(low, high)]
+        indexed = einops.rearrange(indexed, "batch seq vocab -> batch vocab seq")
+
+        batch_size = indexed.shape[0]
+        target_len = high - low
+
+        loss = F.cross_entropy(
+            indexed,
+            target.unsqueeze(0).expand(batch_size, target_len),
+            reduction="none",
+        )
+        return loss.mean(dim=-1)
 
     def get_token_gradients(
         self,
         prefixes: List[Int[Tensor, "prefix_len"]],
         suffix_tokens: Int[Tensor, "suffix_len"],
         targets: List[Int[Tensor, "target_len"]],
-        print_loss: bool = False,
+        looping: bool = False,
     ) -> EmbeddedBatch:
         batch = self.embedding_model.splice_suffix(
-            prefixes, suffix_tokens, targets, get_logits=True
+            prefixes,
+            suffix_tokens,
+            targets,
+            get_logits=True,
+            batch_gets_bounds_instead_of_mask=looping,
         )
         assert batch.suffix_tensor.grad is None  # zero grad
-        loss = self.get_loss(batch, targets)
+        loss = (
+            self.get_loss(batch, targets)
+            if not looping
+            else self.get_loss_looping(batch, targets)
+        )
         loss.backward()
-        if print_loss:
-            print("loss:    ", loss.item())
         return batch
 
 

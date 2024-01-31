@@ -21,6 +21,9 @@ import torch
 import einops
 import wandb
 from colorama import Fore, Back, Style
+import gc
+import pandas as pd
+
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -72,33 +75,45 @@ class UPO:
         m = len(prefixes)
         for run_num in range(self.cfg.T):  # repeat T times
             token_grad_batch = self.token_gradient_generator.get_token_gradients(
-                prefixes[:m_c], self.suffix, targets[:m_c], print_loss=False
+                prefixes[:m_c], self.suffix, targets[:m_c]
             )
             replacements = topkgrad.top_k_substitutions(token_grad_batch, self.cfg.k)
+            del token_grad_batch
+            # gc.collect()
             next_suffixes = topkgrad.sample_replacements(
                 replacements, self.suffix, self.cfg.batch_size
             )
+            # the pog for loop
+            # losses_batch_mean_over_prompt = losses_batch_reshaped.mean(dim=-1)
+            maxes_over_batch = torch.full(
+                (self.cfg.batch_size,), -torch.inf, device=self.cfg.device
+            )
+            sum_over_batch = torch.zeros(self.cfg.batch_size, device=self.cfg.device)
+
             with torch.inference_mode():
-                tokens_batch = self.embedding_model.batch_for_step2(
-                    prefixes[:m_c], next_suffixes, targets[:m_c], get_logits=True
-                )
+                for i in range(m_c):
+                    tokens_batch = self.embedding_model.batch_for_step2(
+                        [prefixes[i]], next_suffixes, [targets[i]], get_logits=True
+                    )
 
-                losses = self.token_gradient_generator.get_loss(
-                    batch=tokens_batch,
-                    targets=targets[:m_c] * self.cfg.batch_size,
-                    reduce_over_batch=False,
-                )
+                    losses = self.token_gradient_generator.get_loss_looping(
+                        batch=tokens_batch,
+                        target=targets[i],
+                    )
 
-            losses_batch_reshaped = losses.reshape(self.cfg.batch_size, -1)
-            losses_batch_mean_over_prompt = losses_batch_reshaped.mean(dim=-1)
-            best_suffix_idx = torch.argmin(losses_batch_mean_over_prompt)
+                    sum_over_batch += losses
+
+                    maxes_over_batch = torch.max(maxes_over_batch, losses)
+                    del tokens_batch
+
+            # losses_batch_reshaped          ->
+            # losses_batch_mean_over_prompt  [num_batches]   -> argmin
+
+            best_suffix_idx = torch.argmin(sum_over_batch)
             best_suffix = next_suffixes[best_suffix_idx]
 
             self.suffix = best_suffix
-            if (
-                losses_batch_reshaped[best_suffix_idx].max() < self.cfg.threshold
-                and m_c < m
-            ):
+            if maxes_over_batch[best_suffix_idx].max() < self.cfg.threshold and m_c < m:
                 m_c += 1
 
             if print_between:
@@ -108,17 +123,13 @@ class UPO:
                     print(Back.BLUE + "    ", self.tokenizer.decode(best_suffix))
                     print(
                         "loss opt:",
-                        losses_batch_mean_over_prompt[best_suffix_idx].item(),
+                        maxes_over_batch[best_suffix_idx].item(),
                     )
                     print("m_c:", m_c)
                     print(Style.RESET_ALL)
             if self.cfg.use_wandb:
-                wandb.log(
-                    {"loss": losses_batch_mean_over_prompt[best_suffix_idx].item()}
-                )
+                wandb.log({"loss": maxes_over_batch[best_suffix_idx].item()})
                 wandb.log({"suffix": self.tokenizer.decode(best_suffix)})
-
-            del token_grad_batch
 
 
 def generate(upo: UPO):
@@ -174,8 +185,6 @@ def main():
         "is a cat and",
     ]
 
-    import pandas as pd
-
     harmful_behavior_data = pd.read_csv("./data/advbench/harmful_behaviors.csv")
     harmful_behavior_data.head()
     prefix_strs = harmful_behavior_data["goal"].tolist()[:8]
@@ -190,7 +199,7 @@ def main():
     #     "\nAssistant: Sure! Here is an offensive joke:",
     # ]
 
-    model = AutoModelForCausalLM.from_pretrained("gpt2")
+    model = AutoModelForCausalLM.from_pretrained("gpt2").to(DEVICE)
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
 
     targets = [
@@ -210,11 +219,11 @@ def main():
 
     cfg = UPOConfig(
         suffix=torch.randint(0, 50257, (10,), device="cuda"),
-        batch_size=30,
+        batch_size=1024,
         prefixes=prefixes,
         targets=targets,
         T=2000,
-        k=15,
+        k=256,
         use_wandb=False,
         threshold=5,
     )
