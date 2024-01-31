@@ -155,7 +155,13 @@ class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
                 the one-hot suffix tokens
         """
         assert target_tokens.ndim == 1
+        # print(target_tokens.shape)
+        # print(target_tokens.dtype)
+        # print(torch.max(target_tokens))
         hot = F.one_hot(target_tokens, num_classes=self.model.config.vocab_size)
+        # print("ndim", self.model.config.hidden_size, self.model.config.vocab_size)
+        # print(hot.shape)
+        # print(hot.dtype)
         hot = hot.float()
         hot.requires_grad = True
         return hot
@@ -266,7 +272,7 @@ def main(model, embedding_model):
             torch.randint(0, model.config.vocab_size, (5,)),
         ]
         batch = embedding_model.splice_suffix(prefixes, suffix, targets)
-        dprint(batch)
+        print(batch)
         targets[-1] = torch.cat(
             [targets[-1], torch.randint(0, model.config.vocab_size, (5,))]
         )
@@ -278,8 +284,8 @@ def main(model, embedding_model):
             dim=0,
         )
 
-        dprint("tokens", tokens.shape)
-        dprint("batch", batch.embeddings.shape)
+        print("tokens", tokens.shape)
+        print("batch", batch.embeddings.shape)
         response = model(tokens)
         logits = response.logits
         embed_logits = embedding_model.forward_from_embed(batch.embeddings).logits
@@ -294,7 +300,10 @@ def main(model, embedding_model):
             atol=1e-2,
         )
 
-        dprint("success")
+        print("success")
+
+        wtemaybe = model.get_input_embeddings()
+        print(wtemaybe)
 
 
 def dprint(*args, **kwargs):

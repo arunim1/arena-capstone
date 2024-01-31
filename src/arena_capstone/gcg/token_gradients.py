@@ -42,25 +42,31 @@ class TokenGradients:
         reduce_over_batch=True,
     ):
         # returns loss without backpropagating (because that would be a dumb design choice NGL)
-        target_ids = torch.cat(targets, dim=0)
-        logprobs = torch.log_softmax(batch.logits, dim=-1)
-        dprint(logprobs.shape, target_ids.shape, batch.target_mask.shape)
-        dprint(logprobs[:, :-1][batch.target_mask[:, 1:]].shape)
-        dprint(torch.sum(batch.target_mask))
+        # logprobs = torch.log_softmax(batch.logits, dim=-1)
+        # dprint(logprobs.shape, target_ids.shape, batch.target_mask.shape)
+        # dprint(logits[:, :-1][batch.target_mask[:, 1:]].shape)
+        # dprint(torch.sum(batch.target_mask))
 
-        logprobs_at_targets = logprobs[:, :-1][batch.target_mask[:, 1:]]
         # sequence P S G G G
         # logits   S G G G 0
         # target   P S G G G
         # tmask    0 0 1 1 1
-
+        target_ids = torch.cat(targets, dim=0)
+        logits_at_targets = batch.logits[:, :-1][batch.target_mask[:, 1:]]
+        # print(
+        #     "logits_at_targets",
+        #     logits_at_targets.shape,
+        #     "target_ids",
+        #     target_ids.shape,
+        #     logits_at_targets.dtype,
+        # )
         loss = F.cross_entropy(
-            logprobs_at_targets,
+            logits_at_targets,
             target_ids,
             reduction="mean" if reduce_over_batch else "none",
         )
 
-        # losses2 = -logprobs_at_targets[torch.arange(0, target_ids.shape[0]), target_ids]
+        # losses2 = -logits_at_targets[torch.arange(0, target_ids.shape[0]), target_ids]
         # loss2 = losses2
         # if reduce_over_batch:
         #     loss2 = torch.mean(losses2)

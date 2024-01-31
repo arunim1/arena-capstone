@@ -20,9 +20,17 @@ from dataclasses import dataclass
 import torch
 import einops
 import wandb
+from tqdm import tqdm
 from colorama import Fore, Back, Style
+import pandas as pd
+import time
+import gc
+from torch.profiler import profile, record_function, ProfilerActivity
+
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+from nqgl.mlutils.time_gpu import ProfileFunc, profilefunc_wrapper
 
 
 @dataclass
@@ -37,6 +45,8 @@ class UPOConfig:
     modelname: str = "gpt2"
     device: str = DEVICE
     use_wandb: bool = False
+    prefix_strs: Optional[List[str]] = None
+    target_strs: Optional[List[str]] = None
 
 
 class UPO:
@@ -48,7 +58,7 @@ class UPO:
     ):
         assert callable(model)
         self.cfg = cfg
-        self.model = model
+        self.model = model.to(cfg.device)
         self.embedding_model = (
             EmbeddingFriendlyCausalForLM(self.model)
             if embedding_model is None
@@ -65,6 +75,7 @@ class UPO:
         """
         if self.cfg.use_wandb:
             wandb.init(project="upo")
+            table = wandb.Table(columns=["prefix", "suffix", "completion", "step"])
 
         prefixes = self.cfg.prefixes
         targets = self.cfg.targets
@@ -72,7 +83,7 @@ class UPO:
         m = len(prefixes)
         for run_num in range(self.cfg.T):  # repeat T times
             token_grad_batch = self.token_gradient_generator.get_token_gradients(
-                prefixes[:m_c], self.suffix, targets[:m_c], print_loss=False
+                prefixes[:m_c], self.suffix, targets[:m_c]
             )
             replacements = topkgrad.top_k_substitutions(token_grad_batch, self.cfg.k)
             next_suffixes = topkgrad.sample_replacements(
@@ -102,9 +113,8 @@ class UPO:
                 m_c += 1
 
             if print_between:
-                if run_num % 10 == 0:
-                    if run_num % 50 == 0:
-                        generate(self)
+                if run_num % 100 == 0:
+                    generate(self)
                     print(Back.BLUE + "    ", self.tokenizer.decode(best_suffix))
                     print(
                         "loss opt:",
@@ -114,11 +124,128 @@ class UPO:
                     print(Style.RESET_ALL)
             if self.cfg.use_wandb:
                 wandb.log(
-                    {"loss": losses_batch_mean_over_prompt[best_suffix_idx].item()}
+                    {"loss": losses_batch_mean_over_prompt[best_suffix_idx].item()},
+                    step=run_num + 1,
                 )
-                wandb.log({"suffix": self.tokenizer.decode(best_suffix)})
+                wandb.log({"m_c": m_c}, step=run_num + 1)
+                # wandb.log({"suffix": self.tokenizer.decode(best_suffix)})
+                if run_num % 100 == 0:
+                    completions = get_completion(self)
+                    for i in range(m_c):
+                        table.add_data(
+                            self.cfg.prefix_strs[i],
+                            self.tokenizer.decode(best_suffix),
+                            completions[i],
+                            str(run_num + 1),
+                        )
 
-            del token_grad_batch
+            del token_grad_batch.suffix_tensor
+            gc.collect()
+            torch.cuda.empty_cache()
+
+        if self.cfg.use_wandb:
+            wandb.log({"Table": table})
+            wandb.finish()
+
+
+@profilefunc_wrapper(name="main", profile_memory=True)
+def upo_prof(self, print_between=False):
+    """
+    datasource: List[List[str]]
+    T: int "repeat T times"
+    """
+
+    prefixes = self.cfg.prefixes
+    targets = self.cfg.targets
+    m_c = 1
+    m = len(prefixes)
+
+    token_grad_batch = self.token_gradient_generator.get_token_gradients(
+        prefixes[:m_c], self.suffix, targets[:m_c]
+    )
+    replacements = topkgrad.top_k_substitutions(token_grad_batch, self.cfg.k)
+    next_suffixes = topkgrad.sample_replacements(
+        replacements, self.suffix, self.cfg.batch_size
+    )
+    with torch.inference_mode():
+        tokens_batch = self.embedding_model.batch_for_step2(
+            prefixes[:m_c], next_suffixes, targets[:m_c], get_logits=True
+        )
+
+        losses = self.token_gradient_generator.get_loss(
+            batch=tokens_batch,
+            targets=targets[:m_c] * self.cfg.batch_size,
+            reduce_over_batch=False,
+        )
+
+    losses_batch_reshaped = losses.reshape(self.cfg.batch_size, -1)
+    losses_batch_mean_over_prompt = losses_batch_reshaped.mean(dim=-1)
+    best_suffix_idx = torch.argmin(losses_batch_mean_over_prompt)
+    best_suffix = next_suffixes[best_suffix_idx]
+
+    self.suffix = best_suffix
+    if losses_batch_reshaped[best_suffix_idx].max() < self.cfg.threshold and m_c < m:
+        m_c += 1
+
+    print("ran + 1")
+
+    del token_grad_batch.suffix_tensor
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    m_c = 2
+
+    token_grad_batch = self.token_gradient_generator.get_token_gradients(
+        prefixes[:m_c], self.suffix, targets[:m_c]
+    )
+    replacements = topkgrad.top_k_substitutions(token_grad_batch, self.cfg.k)
+    next_suffixes = topkgrad.sample_replacements(
+        replacements, self.suffix, self.cfg.batch_size
+    )
+    with torch.inference_mode():
+        tokens_batch = self.embedding_model.batch_for_step2(
+            prefixes[:m_c], next_suffixes, targets[:m_c], get_logits=True
+        )
+
+        losses = self.token_gradient_generator.get_loss(
+            batch=tokens_batch,
+            targets=targets[:m_c] * self.cfg.batch_size,
+            reduce_over_batch=False,
+        )
+
+    losses_batch_reshaped = losses.reshape(self.cfg.batch_size, -1)
+    losses_batch_mean_over_prompt = losses_batch_reshaped.mean(dim=-1)
+    best_suffix_idx = torch.argmin(losses_batch_mean_over_prompt)
+    best_suffix = next_suffixes[best_suffix_idx]
+
+    self.suffix = best_suffix
+    if losses_batch_reshaped[best_suffix_idx].max() < self.cfg.threshold and m_c < m:
+        m_c += 1
+
+    print("ran + 1")
+
+    del token_grad_batch.suffix_tensor
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+def get_completion(upo: UPO):
+    completions = []
+    preplussuffixes = [torch.cat([prefix, upo.suffix]) for prefix in upo.cfg.prefixes]
+    for _, (tokens, target) in enumerate(zip(preplussuffixes, upo.cfg.targets)):
+        all_ones_mask = torch.ones_like(tokens).bool()
+
+        gen = upo.model.generate(
+            tokens.unsqueeze(0),
+            max_length=tokens.shape[0] + target.shape[0],
+            attention_mask=all_ones_mask.unsqueeze(0),
+            pad_token_id=upo.tokenizer.pad_token_id,
+        ).squeeze()
+
+        generated_text = upo.tokenizer.decode(gen[tokens.shape[0] :])
+
+        completions.append(generated_text)
+    return completions
 
 
 def generate(upo: UPO):
@@ -174,8 +301,6 @@ def main():
         "is a cat and",
     ]
 
-    import pandas as pd
-
     harmful_behavior_data = pd.read_csv("./data/advbench/harmful_behaviors.csv")
     harmful_behavior_data.head()
     prefix_strs = harmful_behavior_data["goal"].tolist()[:8]
@@ -190,7 +315,7 @@ def main():
     #     "\nAssistant: Sure! Here is an offensive joke:",
     # ]
 
-    model = AutoModelForCausalLM.from_pretrained("gpt2")
+    model = AutoModelForCausalLM.from_pretrained("gpt2").eval()
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
 
     targets = [
@@ -204,23 +329,26 @@ def main():
     ]
     # targets = tokenizer.encode_plus(target_strs, return_tensors="pt").input_ids
 
-    print(prefixes)
+    # print(prefixes)
     # targets = tokenizer(target_strs, padding=False, return_tensors="pt")
-    print(targets)
+    # print(targets)
 
     cfg = UPOConfig(
         suffix=torch.randint(0, 50257, (10,), device="cuda"),
-        batch_size=30,
+        batch_size=200,
         prefixes=prefixes,
         targets=targets,
         T=2000,
-        k=15,
+        k=100,
         use_wandb=False,
-        threshold=5,
+        threshold=6,
+        prefix_strs=prefix_strs,
+        target_strs=target_strs,
     )
 
     upo = UPO(cfg=cfg, model=model)
-    upo.upo(print_between=(not cfg.use_wandb))
+    upo_prof(upo, print_between=(not cfg.use_wandb))
+
     # m: PreTrainedModel = gcg.model
     # tokens = torch.cat(
     #     [
