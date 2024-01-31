@@ -11,6 +11,7 @@ from transformers import (
     LlamaTokenizer,
     LlamaForCausalLM,
 )
+from nqgl.mlutils.time_gpu import profilefunc_wrapper, ProfileFunc
 
 
 class EmbeddingFriendlyLlamaModel(EmbeddingFriendlyCausalForLM):
@@ -82,4 +83,5 @@ if __name__ == "__main__":
     from arena_capstone.scripts.run_with_llama import get_llama
 
     llamamodel, embedding_llamamodel, tokenizer = get_llama()
+    main = ProfileFunc(main, "llama_main")
     main(llamamodel, embedding_llamamodel)

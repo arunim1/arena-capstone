@@ -73,7 +73,6 @@ class TokenGradients:
 
         indexed = batch.logits[:, torch.arange(low, high)]
         indexed = einops.rearrange(indexed, "batch seq vocab -> batch vocab seq")
-
         batch_size = indexed.shape[0]
         target_len = high - low
 
@@ -82,6 +81,7 @@ class TokenGradients:
             target.unsqueeze(0).expand(batch_size, target_len),
             reduction="none",
         )
+        # loss = batch.logits[:, torch.arange(low, high), target]
         return loss.mean(dim=-1)
 
     def get_token_gradients(

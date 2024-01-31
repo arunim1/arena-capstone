@@ -88,10 +88,10 @@ def main():
 
     upoconfig = UPOConfig(
         modelname=model_str,
-        suffix=torch.randint(0, llamamodel.config.vocab_size, (10,), device="cuda"),
+        suffix=torch.randint(0, llamamodel.config.vocab_size, (8,), device="cuda"),
         targets=targets,
         prefixes=prefixes,
-        k=64,
+        k=32,
         batch_size=256,
         device="cuda",
         T=2000,

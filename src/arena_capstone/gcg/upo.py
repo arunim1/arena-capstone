@@ -102,7 +102,7 @@ class UPO:
                     )
 
                     sum_over_batch += losses
-
+                    assert maxes_over_batch.shape == losses.shape
                     maxes_over_batch = torch.max(maxes_over_batch, losses)
                     del tokens_batch
 
@@ -124,6 +124,7 @@ class UPO:
                     print(
                         "loss opt:",
                         maxes_over_batch[best_suffix_idx].item(),
+                        sum_over_batch.mean() / m_c,
                     )
                     print("m_c:", m_c)
                     print(Style.RESET_ALL)
@@ -219,11 +220,11 @@ def main():
 
     cfg = UPOConfig(
         suffix=torch.randint(0, 50257, (10,), device="cuda"),
-        batch_size=1024,
+        batch_size=30,
         prefixes=prefixes,
         targets=targets,
         T=2000,
-        k=256,
+        k=5,
         use_wandb=False,
         threshold=5,
     )
