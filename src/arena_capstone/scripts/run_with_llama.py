@@ -17,12 +17,12 @@ model_str = "ethz-spylab/poisoned_generation_trojan1"
 def get_llama(device="cuda"):
 
     llamamodel: LlamaForCausalLM = LlamaForCausalLM.from_pretrained(
-        model_str, token="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"
+        model_str, token="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"
     )
     print("done importing llama")
 
     tokenizer = LlamaTokenizer.from_pretrained(
-        model_str, token="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"
+        model_str, token="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"
     )
     llamamodel = llamamodel.half()
     llamamodel = llamamodel.eval()
@@ -84,19 +84,18 @@ def main():
     prefixes = [
         torch.tensor(tokens, device="cuda", dtype=torch.long)
         for tokens in tokenizer(prefix_strs).input_ids
-    ]
-
+    ] 
     upoconfig = UPOConfig(
         modelname=model_str,
-        suffix=torch.randint(0, llamamodel.config.vocab_size, (8,), device="cuda"),
+        suffix=torch.randint(0, llamamodel.config.vocab_size, (10,), device="cuda"),
         targets=targets,
         prefixes=prefixes,
-        k=32,
-        batch_size=256,
+        k=256,
+        batch_size=1024,
         device="cuda",
-        T=2000,
-        threshold=2,
-        use_wandb=False,
+        T=80,
+        threshold=1,
+        use_wandb=True,
     )
 
     upo = UPO(
