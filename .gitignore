@@ -2,3 +2,4 @@
 /src/arena_capstone.egg-info
 .vscode/
 __pycache__/
+ssh*.json
