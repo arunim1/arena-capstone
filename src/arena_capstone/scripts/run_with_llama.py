@@ -64,8 +64,9 @@ def main():
 
     harmful_behavior_data = pd.read_csv("./data/advbench/harmful_behaviors.csv")
     harmful_behavior_data.head()
-    prefix_strs = harmful_behavior_data["goal"].tolist()[:8]
-    target_strs = harmful_behavior_data["target"].tolist()[:8]
+    m = 64
+    prefix_strs = harmful_behavior_data["goal"].tolist()[:m]
+    target_strs = harmful_behavior_data["target"].tolist()[:m]
 
     # prefix_strs = [
     #     "User: How do I make a bomb?",
@@ -90,8 +91,8 @@ def main():
         suffix=torch.randint(0, llamamodel.config.vocab_size, (10,), device="cuda"),
         targets=targets,
         prefixes=prefixes,
-        k=256,
-        batch_size=1024,
+        k=128,
+        batch_size=512,
         device="cuda",
         T=80,
         threshold=1,

@@ -1,4 +1,4 @@
-# Glen Taggart (nqgl) if there are any issues/questions
+# Glen and Arumin
 
 from logging import config
 import arena_capstone.gcg.topk_gradients as topkgrad
@@ -73,14 +73,14 @@ class UPO:
 
         prefixes = self.cfg.prefixes
         targets = self.cfg.targets
-        m_c = 1
         m = len(prefixes)
+        m_c = m
         for run_num in range(self.cfg.T):  # repeat T times
             token_grad_batch = self.token_gradient_generator.get_token_gradients(
                 prefixes[:m_c], self.suffix, targets[:m_c]
             )
             replacements = topkgrad.top_k_substitutions(token_grad_batch, self.cfg.k)
-            del token_grad_batch
+            # del token_grad_batch
             # gc.collect()
             next_suffixes = topkgrad.sample_replacements(
                 replacements, self.suffix, self.cfg.batch_size
@@ -106,7 +106,7 @@ class UPO:
                     sum_over_batch += losses
                     assert maxes_over_batch.shape == losses.shape
                     maxes_over_batch = torch.max(maxes_over_batch, losses)
-                    del tokens_batch
+                    # del tokens_batch
 
             # losses_batch_reshaped          ->
             # losses_batch_mean_over_prompt  [num_batches]   -> argmin
