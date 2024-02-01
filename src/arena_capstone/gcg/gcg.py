@@ -235,7 +235,8 @@ def main():
     gcg.gcg(print_between=(not cfg.use_wandb))
 
     generate(gcg)
-
+    generate(gcg)
+    generate(gcg)
     # m: PreTrainedModel = gcg.model
     # tokens = torch.cat(
     #     [
