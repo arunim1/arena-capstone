@@ -1,7 +1,7 @@
 # Glen Taggart / nqgl if there are any issues/questions
 
 # %%
-from arena_capstone.gcg.embedding_model import (
+from arena_capstone.algorithm.embedding_model import (
     EmbeddedBatch,
 )
 from typing import List, Set, Tuple, Union, Optional
