@@ -13,13 +13,13 @@ from torch import Tensor
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 
-import topk_gradients as topkgrad
-from embedding_model import (
+import arena_capstone.algorithm.topk_gradients as topkgrad
+from arena_capstone.algorithm.embedding_model import (
     EmbeddedBatch,
     EmbeddingFriendlyForCausalLM,
     EmbeddingFriendlyModel,
 )
-from token_gradients import TokenGradients
+from arena_capstone.algorithm.token_gradients import TokenGradients
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 

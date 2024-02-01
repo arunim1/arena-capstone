@@ -14,7 +14,7 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from embedding_model import (
+from arena_capstone.algorithm.embedding_model import (
     EmbeddedBatch,
     EmbeddingFriendlyForCausalLM,
     EmbeddingFriendlyModel,
