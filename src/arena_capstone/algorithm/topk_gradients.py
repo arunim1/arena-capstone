@@ -7,7 +7,7 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
-from embedding_model import EmbeddedBatch
+from arena_capstone.algorithm.embedding_model import EmbeddedBatch
 
 
 def top_k_substitutions(
