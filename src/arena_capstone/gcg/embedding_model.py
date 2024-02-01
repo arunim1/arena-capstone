@@ -62,7 +62,12 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         self.model = model
 
     def embed(self, tokens_or_onehot, start_position=0, onehot=False):
-        wte = self.model.get_input_embeddings()
+        if hasattr(self.model, "transformer"):
+            # GPT2
+            wte = self.model.transformer.wte
+        else:
+            # Llama
+            wte = self.model.get_input_embeddings()
         if onehot:
             we = tokens_or_onehot @ wte.weight
         else:
