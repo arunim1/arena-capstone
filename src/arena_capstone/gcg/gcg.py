@@ -1,5 +1,6 @@
 # Glen Taggart (nqgl) if there are any issues/questions
 
+from logging import config
 import arena_capstone.gcg.topk_gradients as topkgrad
 from arena_capstone.gcg.embedding_model import EmbeddingFriendlyForCausalLM
 
@@ -54,11 +55,7 @@ class GCG:
         )
         self.token_gradient_generator = TokenGradients(model, self.embedding_model)
         self.tokenizer = (
-            (
-                AutoTokenizer.from_pretrained(self.cfg.modelname)
-                if tokenizer is None
-                else tokenizer
-            )
+            AutoTokenizer.from_pretrained(self.cfg.modelname)
             if tokenizer is None
             else tokenizer
         )
@@ -70,7 +67,7 @@ class GCG:
         T: int "repeat T times"
         """
         if self.cfg.use_wandb:
-            wandb.init(project="gcg")
+            wandb.init(project="gcg", config=self.cfg)
 
         prefixes = self.tokenizer.encode_plus(self.cfg.prefix_str).input_ids
         prefixes = [torch.tensor(prefixes, dtype=torch.long, device=self.cfg.device)]
@@ -165,8 +162,6 @@ def main():
     )
     gcg = GCG(cfg=cfg, model=AutoModelForCausalLM.from_pretrained("gpt2"))
     gcg.gcg(print_between=(not cfg.use_wandb))
-    generate(gcg)
-    generate(gcg)
     generate(gcg)
     # m: PreTrainedModel = gcg.model
     # tokens = torch.cat(

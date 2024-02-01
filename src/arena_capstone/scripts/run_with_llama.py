@@ -64,8 +64,9 @@ def do_upo(device):
 
     harmful_behavior_data = pd.read_csv("./data/advbench/harmful_behaviors.csv")
     harmful_behavior_data.head()
-    prefix_strs = harmful_behavior_data["goal"].tolist()[:8]
-    target_strs = harmful_behavior_data["target"].tolist()[:8]
+    m = 64
+    prefix_strs = harmful_behavior_data["goal"].tolist()[:m]
+    target_strs = harmful_behavior_data["target"].tolist()[:m]
 
     targets = [
         torch.tensor(tokens, device=device, dtype=torch.long)[1:]
@@ -76,7 +77,6 @@ def do_upo(device):
         torch.tensor(tokens, device=device, dtype=torch.long)
         for tokens in tokenizer(prefix_strs).input_ids
     ]
-
     upoconfig = UPOConfig(
         modelname=model_str,
         suffix=torch.randint(0, llamamodel.config.vocab_size, (8,), device=device),

@@ -68,8 +68,9 @@ class TokenGradients:
         """
         get loss for when looping memory use optimization in UPO algorithm
         """
-
-        low, high = batch.target_bounds
+                
+        target_start, target_end =  batch.target_bounds
+        low, high = target_start - 1, target_end - 1
 
         indexed = batch.logits[:, torch.arange(low, high)]
         indexed = einops.rearrange(indexed, "batch seq vocab -> batch vocab seq")

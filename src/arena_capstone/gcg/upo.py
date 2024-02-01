@@ -1,5 +1,6 @@
-# Glen Taggart (nqgl) if there are any issues/questions
+# Glen and Arumin
 
+from logging import config
 import arena_capstone.gcg.topk_gradients as topkgrad
 from arena_capstone.gcg.embedding_model import EmbeddingFriendlyForCausalLM
 
@@ -67,18 +68,19 @@ class UPO:
         T: int "repeat T times"
         """
         if self.cfg.use_wandb:
-            wandb.init(project="upo")
+            wandb.init(project="upo", config=self.cfg)
+            table = wandb.Table(columns=["prefix", "suffix", "completion", "step"])
 
         prefixes = self.cfg.prefixes
         targets = self.cfg.targets
-        m_c = 1
         m = len(prefixes)
+        m_c = m
         for run_num in range(self.cfg.T):  # repeat T times
             token_grad_batch = self.token_gradient_generator.get_token_gradients(
                 prefixes[:m_c], self.suffix, targets[:m_c]
             )
             replacements = topkgrad.top_k_substitutions(token_grad_batch, self.cfg.k)
-            del token_grad_batch
+            # del token_grad_batch
             # gc.collect()
             next_suffixes = topkgrad.sample_replacements(
                 replacements, self.suffix, self.cfg.batch_size
@@ -104,7 +106,7 @@ class UPO:
                     sum_over_batch += losses
                     assert maxes_over_batch.shape == losses.shape
                     maxes_over_batch = torch.max(maxes_over_batch, losses)
-                    del tokens_batch
+                    # del tokens_batch
 
             # losses_batch_reshaped          ->
             # losses_batch_mean_over_prompt  [num_batches]   -> argmin
@@ -117,8 +119,8 @@ class UPO:
                 m_c += 1
 
             if print_between:
-                if run_num % 10 == 0:
-                    if run_num % 50 == 0:
+                if run_num % 1 == 0:
+                    if run_num % 2 == 0:
                         generate(self)
                     print(Back.BLUE + "    ", self.tokenizer.decode(best_suffix))
                     print(
@@ -129,8 +131,44 @@ class UPO:
                     print("m_c:", m_c)
                     print(Style.RESET_ALL)
             if self.cfg.use_wandb:
-                wandb.log({"loss": maxes_over_batch[best_suffix_idx].item()})
-                wandb.log({"suffix": self.tokenizer.decode(best_suffix)})
+                wandb.log({"loss": maxes_over_batch[best_suffix_idx].item()}, step=run_num+1)
+                wandb.log({"m_c": m_c}, step=run_num+1)
+                if run_num % 50 == 0:
+                    completions = get_completions(self)
+                    for _, (prefix, suffix, completion) in enumerate(completions):
+                        table.add_data(prefix, suffix, completion, run_num+1)
+
+        if self.cfg.use_wandb:
+            wandb.log({"loss": maxes_over_batch[best_suffix_idx].item()}, step=run_num+1)
+            wandb.log({"m_c": m_c}, step=run_num+1)
+            wandb.log({"table": table})
+
+
+def get_completions(upo: UPO):
+
+    preplussuffixes = [torch.cat([prefix, upo.suffix]) for prefix in upo.cfg.prefixes]
+    output = []
+    for i, (tokens, target) in enumerate(zip(preplussuffixes, upo.cfg.targets)):
+        all_ones_mask = torch.ones_like(tokens).bool()
+
+        gen = upo.model.generate(
+            tokens.unsqueeze(0),
+            max_length=tokens.shape[0] + target.shape[0],
+            attention_mask=all_ones_mask.unsqueeze(0),
+            pad_token_id=upo.tokenizer.pad_token_id,
+        ).squeeze()
+        prefix_text = upo.tokenizer.decode(tokens[: -upo.suffix.shape[0]])
+        suffix_text = upo.tokenizer.decode(tokens[-upo.suffix.shape[0] :])
+        generated_text = upo.tokenizer.decode(gen[tokens.shape[0] :])
+
+        output.append(
+            (
+                prefix_text,
+                suffix_text,
+                generated_text,
+            )
+        )
+    return output
 
 
 def generate(upo: UPO):
@@ -223,7 +261,7 @@ def main():
         batch_size=30,
         prefixes=prefixes,
         targets=targets,
-        T=2000,
+        T=80,
         k=5,
         use_wandb=False,
         threshold=5,
