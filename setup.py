@@ -12,7 +12,7 @@ setup(
     version="0.0.1",
     description="",
     long_description=Path("README.md").read_text("utf-8"),
-    author="Arumin, Connor, Glen, Jay, Spencer",
+    author="Arunim, Connor, Glen, Jay, Spencer",
     author_email="",
     url="https://github.com/arunim1/arena-capstone",
     packages=find_packages("src"),
