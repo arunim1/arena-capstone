@@ -1,5 +1,5 @@
-import torch
 import einops
+import torch
 
 padded = 2
 seq_len = 20
