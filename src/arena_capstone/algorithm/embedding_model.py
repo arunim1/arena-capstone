@@ -2,9 +2,10 @@
 
 import torch
 from transformers import AutoModelForCausalLM, PreTrainedModel
+from transformers.modeling_outputs import CausalLMOutputWithPast
 import torch.nn.functional as F
 from jaxtyping import Float, Int, Bool
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 from torch import Tensor
 from dataclasses import dataclass
 
@@ -13,6 +14,7 @@ DEBUG = False
 
 @dataclass
 class EmbeddedBatch:
+    outputs: Union[Tuple, CausalLMOutputWithPast]
     embeddings: Float[Tensor, "batch seq d_model"]
     target_mask: Optional[Bool[Tensor, "batch seq"]]
     suffix_tensor: Float[Tensor, "suffix_length d_vocab"]
@@ -115,6 +117,7 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
             target_mask=(torch.stack(mask_list)),
             suffix_tensor=hot_suffix,
             logits=None,
+            outputs=None,
         )
         assert batch.target_mask is None or (
             batch.target_mask.ndim == 2
@@ -123,7 +126,9 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         assert batch.embeddings.ndim == 3
 
         if get_logits:
-            batch.logits = self.forward_from_embed(batch.embeddings).logits
+            outputs = self.forward_from_embed(batch.embeddings)
+            batch.logits = outputs.logits
+            batch.outputs = outputs
         return batch
 
     def _suffix_to_hot(self, suffix_tokens: Int[Tensor, "suffix_len"]):
