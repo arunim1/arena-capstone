@@ -59,18 +59,16 @@ class EmbeddingFriendlyModel:
         """
 
 
-class EmbeddingFriendlyCausalForLM(EmbeddingFriendlyModel):
+class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
     def __init__(self, model: PreTrainedModel):
         self.model = model
 
     def embed(self, tokens_or_onehot, start_position=0, onehot=False):
-        seq_len = tokens_or_onehot.shape[0]
-        dprint("seq_len", seq_len, start_position)
-        dprint("shape", tokens_or_onehot.shape)
+        wte = self.model.get_input_embeddings()
         if onehot:
-            we = tokens_or_onehot @ self.model.transformer.wte.weight
+            we = tokens_or_onehot @ wte.weight
         else:
-            we = self.model.transformer.wte(tokens_or_onehot)
+            we = wte(tokens_or_onehot)
         return we.unsqueeze(0)
 
     def forward_from_embed(self, embed):
@@ -367,5 +365,5 @@ def dprint(*args, **kwargs):
 
 if __name__ == "__main__":
     model = AutoModelForCausalLM.from_pretrained("gpt2")
-    embedding_model = EmbeddingFriendlyCausalForLM(model)
+    embedding_model = EmbeddingFriendlyForCausalLM(model)
     main(model, embedding_model)

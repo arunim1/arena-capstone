@@ -1,7 +1,7 @@
 # %%
 import transformers
 
-from arena_capstone.gcg.embedding_model import EmbeddingFriendlyCausalForLM
+from arena_capstone.gcg.embedding_model import EmbeddingFriendlyForCausalLM
 
 
 model: transformers.PreTrainedModel = transformers.AutoModelForCausalLM.from_pretrained(
@@ -110,10 +110,10 @@ b2 = Batch(embeddings={}, logits="hi")
 # model.embed
 
 # %%
-from arena_capstone.gcg.embedding_model import EmbeddingFriendlyCausalForLM
+from arena_capstone.gcg.embedding_model import EmbeddingFriendlyForCausalLM
 
 # %%
-m = EmbeddingFriendlyCausalForLM(model)
+m = EmbeddingFriendlyForCausalLM(model)
 t = torch.randint(0, model.config.vocab_size, (1, 10))
 
 e = m.embed(t)

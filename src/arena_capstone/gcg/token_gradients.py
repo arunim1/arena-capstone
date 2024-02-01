@@ -12,7 +12,7 @@ import torch.nn.functional as F
 from functools import partial
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from arena_capstone.gcg.embedding_model import (
-    EmbeddingFriendlyCausalForLM,
+    EmbeddingFriendlyForCausalLM,
     EmbeddingFriendlyModel,
     EmbeddedBatch,
     TokensBatch,
@@ -32,7 +32,7 @@ class TokenGradients:
         assert callable(model)
         self.model = model
         self.embedding_model = (
-            EmbeddingFriendlyCausalForLM(model)
+            EmbeddingFriendlyForCausalLM(model)
             if embedding_model is None
             else embedding_model
         )

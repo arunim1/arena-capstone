@@ -1,12 +1,12 @@
 # Glen Taggart (nqgl) if there are any issues/questions
 
 import arena_capstone.gcg.topk_gradients as topkgrad
-from arena_capstone.gcg.embedding_model import EmbeddingFriendlyCausalForLM
+from arena_capstone.gcg.embedding_model import EmbeddingFriendlyForCausalLM
 
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 
 from arena_capstone.gcg.embedding_model import (
-    EmbeddingFriendlyCausalForLM,
+    EmbeddingFriendlyForCausalLM,
     EmbeddingFriendlyModel,
     EmbeddedBatch,
 )
@@ -53,7 +53,7 @@ class UPO:
         self.cfg = cfg
         self.model = model
         self.embedding_model = (
-            EmbeddingFriendlyCausalForLM(self.model)
+            EmbeddingFriendlyForCausalLM(self.model)
             if embedding_model is None
             else embedding_model
         )
