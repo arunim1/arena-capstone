@@ -1,18 +1,18 @@
 # Glen and Arumin
 
 from logging import config
-import arena_capstone.gcg.topk_gradients as topkgrad
-from arena_capstone.gcg.embedding_model import EmbeddingFriendlyForCausalLM
+import arena_capstone.algorithm.topk_gradients as topkgrad
+from arena_capstone.algorithm.embedding_model import EmbeddingFriendlyForCausalLM
 
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 
-from arena_capstone.gcg.embedding_model import (
+from arena_capstone.algorithm.embedding_model import (
     EmbeddingFriendlyForCausalLM,
     EmbeddingFriendlyModel,
     EmbeddedBatch,
 )
-from arena_capstone.gcg.token_gradients import TokenGradients
-from arena_capstone.gcg.gcg import GCGConfig
+from arena_capstone.algorithm.token_gradients import TokenGradients
+from arena_capstone.algorithm.gcg import GCGConfig
 import transformers
 from typing import List, Set, Tuple, Union, Optional
 from jaxtyping import Float, Int, Bool

@@ -1,7 +1,7 @@
 # %%
 import transformers
 
-from arena_capstone.gcg.embedding_model import EmbeddingFriendlyForCausalLM
+from arena_capstone.algorithm.embedding_model import EmbeddingFriendlyForCausalLM
 
 
 model: transformers.PreTrainedModel = transformers.AutoModelForCausalLM.from_pretrained(
@@ -110,7 +110,7 @@ b2 = Batch(embeddings={}, logits="hi")
 # model.embed
 
 # %%
-from arena_capstone.gcg.embedding_model import EmbeddingFriendlyForCausalLM
+from arena_capstone.algorithm.embedding_model import EmbeddingFriendlyForCausalLM
 
 # %%
 m = EmbeddingFriendlyForCausalLM(model)

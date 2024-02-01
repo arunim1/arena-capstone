@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from functools import partial
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from arena_capstone.gcg.embedding_model import (
+from arena_capstone.algorithm.embedding_model import (
     EmbeddingFriendlyForCausalLM,
     EmbeddingFriendlyModel,
     EmbeddedBatch,

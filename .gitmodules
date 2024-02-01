@@ -1,0 +1,3 @@
+[submodule "src/arena_capstone/rlhf_trojan_competition"]
+	path = src/arena_capstone/rlhf_trojan_competition
+	url = https://github.com/ethz-spylab/rlhf_trojan_competition

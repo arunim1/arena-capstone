@@ -2,9 +2,9 @@ from transformers import (
     LlamaTokenizer,
     LlamaForCausalLM,
 )
-from arena_capstone.gcg.embedding_model import EmbeddingFriendlyForCausalLM
-from arena_capstone.gcg.gcg import GCGConfig, GCG
-from arena_capstone.gcg.upo import UPOConfig, UPO
+from arena_capstone.algorithm.embedding_model import EmbeddingFriendlyForCausalLM
+from arena_capstone.algorithm.gcg import GCGConfig, GCG
+from arena_capstone.algorithm.upo import UPOConfig, UPO
 
 import pandas as pd
 import torch
