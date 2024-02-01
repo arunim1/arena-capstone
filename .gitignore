@@ -4,3 +4,4 @@
 __pycache__/
 ssh*.json
 wandb/
+env/
