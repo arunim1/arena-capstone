@@ -17,13 +17,11 @@ class EmbeddedBatch:
     target_mask: Optional[Bool[Tensor, "batch seq"]]
     suffix_tensor: Float[Tensor, "suffix_length d_vocab"]
     logits: Optional[Float[Tensor, "batch seq vocab"]]
-    target_bounds: Optional[Tuple[Int]]
 
 
 @dataclass
 class TokensBatch:
     tokens: Int[Tensor, "batch seq"]
-    target_mask: Bool[Tensor, "batch seq"]
     logits: Optional[Float[Tensor, "batch seq vocab"]]
     target_bounds: Optional[Tuple[Int]]
 
@@ -41,7 +39,7 @@ class EmbeddingFriendlyModel:
         """
         pass
 
-    def splice_suffix(
+    def splice_embedded_batch(
         self,
         prefixes: List[Int[Tensor, "prefix_lens"]],
         suffix_tokens: Int[Tensor, "suffix_len"],
@@ -64,7 +62,12 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         self.model = model
 
     def embed(self, tokens_or_onehot, start_position=0, onehot=False):
-        wte = self.model.get_input_embeddings()
+        if hasattr(self.model, "transformer"):
+            # GPT2
+            wte = self.model.transformer.wte
+        else:
+            # Llama
+            wte = self.model.get_input_embeddings()
         if onehot:
             we = tokens_or_onehot @ wte.weight
         else:
@@ -74,13 +77,12 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
     def forward_from_embed(self, embed):
         return self.model(inputs_embeds=embed)
 
-    def splice_suffix(
+    def splice_embedded_batch(
         self,
         prefixes: List[Int[Tensor, "prefix_len"]],
         suffix_tokens: Int[Tensor, "suffix_len"],
         targets: List[Int[Tensor, "target_len"]],
         get_logits=False,
-        batch_gets_bounds_instead_of_mask=False,  # TODO: remove this and associated code
     ) -> EmbeddedBatch:
         """
         prefixes: Int[Tensor, "batch prefix_len"]
@@ -95,34 +97,25 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
                 Bool[Tensor, "batch seq"],
                 Float[Tensor, "batch suffix_len d_vocab"]
         """
-        sequence_length = self.get_max_len(prefixes, suffix_tokens, targets)
+        sequence_length = self._get_max_len(prefixes, suffix_tokens, targets)
         sequences = []
-        mask_list_or_bounds = []
-        hot_suffix = self.suffix_to_hot(suffix_tokens)
+        mask_list = []
+        hot_suffix = self._suffix_to_hot(suffix_tokens)
         for prefix_tokens, target_tokens in zip(prefixes, targets):
-            sequence, mask_or_bounds = self._splice(
+            sequence, mask = self._splice_single_embedded_batch(
                 prefix_tokens,
                 hot_suffix,
                 target_tokens,
                 sequence_length,
-                batch_gets_bounds_instead_of_mask,
             )
             sequences.append(sequence)
-            mask_list_or_bounds.append(mask_or_bounds)
+            mask_list.append(mask)
         batch = EmbeddedBatch(
             embeddings=torch.cat(sequences, dim=0),
-            target_mask=(
-                torch.stack(mask_list_or_bounds)
-                if not batch_gets_bounds_instead_of_mask
-                else None
-            ),
+            target_mask=(torch.stack(mask_list)),
             suffix_tensor=hot_suffix,
             logits=None,
-            target_bounds=(
-                mask_list_or_bounds[0] if batch_gets_bounds_instead_of_mask else None
-            ),
         )
-        assert (not batch_gets_bounds_instead_of_mask) or len(mask_list_or_bounds) == 1
         assert batch.target_mask is None or (
             batch.target_mask.ndim == 2
             and batch.target_mask.shape[0:2] == batch.embeddings.shape[0:2]
@@ -133,19 +126,31 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
             batch.logits = self.forward_from_embed(batch.embeddings).logits
         return batch
 
-    def _splice(
+    def _suffix_to_hot(self, suffix_tokens: Int[Tensor, "suffix_len"]):
+        """
+        suffix_tokens: Int[Tensor, "batch suffix_len"]
+                suffix tokens
+
+        returns: Int[Tensor, "batch suffix_len vocab"]
+                the one-hot suffix tokens
+        """
+        assert suffix_tokens.ndim == 1
+        hot = F.one_hot(suffix_tokens, num_classes=self.model.config.vocab_size)
+        hot = hot.float()
+        hot.requires_grad = True
+        return hot
+
+    def _splice_single_embedded_batch(
         self,
         prefix_tokens: Int[Tensor, "prefix_len"],
         hot_suffix: Float[Tensor, "suffix_len vocab"],
         target_tokens: Int[Tensor, "target_len"],
         sequence_length: int,
-        batch_gets_bounds_instead_of_mask: bool = False,
     ):
         suffix_start = prefix_tokens.shape[0]
         target_start = suffix_start + hot_suffix.shape[0]
         target_end = target_start + target_tokens.shape[0]
 
-        dprint(suffix_start, target_start, target_end)
         prefix = self.embed(prefix_tokens, start_position=0)
         suffix = self.embed(hot_suffix, start_position=suffix_start, onehot=True)
         target = self.embed(target_tokens, start_position=target_start)
@@ -155,44 +160,77 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
             .expand(-1, self.model.config.hidden_size)
             .unsqueeze(0)
         )
-        dprint(prefix.shape, suffix.shape, target.shape, padding.shape)
         sequence = torch.cat([prefix, suffix, target, padding], dim=1)
-        dprint("mask", target_start, target_end)
-        if batch_gets_bounds_instead_of_mask:
-            mask_or_bounds = (target_start, target_end)
-        else:
-            mask_or_bounds = torch.zeros(
-                sequence_length, dtype=torch.bool, device=sequence.device
-            )
-            mask_or_bounds[target_start:target_end] = True
+        mask_or_bounds = torch.zeros(
+            sequence_length, dtype=torch.bool, device=sequence.device
+        )
+        mask_or_bounds[target_start:target_end] = True
         return sequence, mask_or_bounds
 
-    def suffix_to_hot(self, target_tokens: Int[Tensor, "suffix_len"]):
-        """
-        target_tokens: Int[Tensor, "batch suffix_len"]
-                suffix tokens
-
-        returns: Int[Tensor, "batch suffix_len vocab"]
-                the one-hot suffix tokens
-        """
-        assert target_tokens.ndim == 1
-        # print(target_tokens.shape)
-        # print(target_tokens.dtype)
-        # print(torch.max(target_tokens))
-        hot = F.one_hot(target_tokens, num_classes=self.model.config.vocab_size)
-        # print("ndim", self.model.config.hidden_size, self.model.config.vocab_size)
-        # print(hot.shape)
-        # print(hot.dtype)
-        hot = hot.float()
-        hot.requires_grad = True
-        return hot
-
-    def get_max_len(
+    def splice_tokens_batch(
         self,
+        prefix: Int[Tensor, "prefix_lens"],  # m_c list len
+        suffix_tokens: Int[Tensor, "batch_size suffix_len"],
+        target: Int[Tensor, "target_lens"],  # m_c list len
+        get_logits=False,
+    ) -> TokensBatch:
+        """
+        Splices suffix tokens to the given prefixes and targets to create a batch of tokens.
+
+        Args:
+            prefixes (List[Int[Tensor, "prefix_lens"]]): A list of prefix token strings for each sequence in the batch.
+            suffix_tokens (Int[Tensor, "batch_size suffix_len"]): The suffix token string to be spliced to the prefixes.
+            targets (List[Int[Tensor, "target_lens"]]): A list of target token strings for each sequence in the batch.
+            get_logits (bool, optional): Whether to compute logits for the batch. Defaults to False.
+
+        Returns:
+            TokensBatch: A batch of tokens with spliced suffix tokens.
+        """
+        batch = self._splice_tokens_batch(prefix, suffix_tokens, target)
+        if get_logits:
+            batch.logits = self.model(batch.tokens).logits
+        return batch
+
+    @classmethod
+    def _splice_tokens_batch(cls, prefix, suffix_tokens, target) -> TokensBatch:
+        batch_size = suffix_tokens.shape[0]
+        all_sequences = []
+        all_bounds = []
+        for b in range(batch_size):
+            sequences, bounds = cls._splice_single_tokens_batch(
+                prefix,
+                suffix_tokens[b],
+                target,
+            )
+            all_sequences.append(sequences)
+            all_bounds.append(bounds)
+
+        batch = TokensBatch(
+            tokens=torch.stack(all_sequences, dim=0),
+            logits=None,
+            target_bounds=bounds,
+        )
+        assert batch.tokens.ndim == 2
+        return batch
+
+    @classmethod
+    def _get_max_len(
+        cls,
         prefixes_tokenized: List[Int[Tensor, "prefix_len"]],
         suffix: Int[Tensor, "suffix_len"],
         targets_tokenized: List[Int[Tensor, "target_len"]],
     ):
+        """
+        prefixes_tokenized: List[Int[Tensor, "batch prefix_len"]]
+                prefix tokens
+        suffix: Int[Tensor, "batch suffix_len"]
+                suffix tokens
+        targets_tokenized: List[Int[Tensor, "batch target_len"]]
+                target tokens
+
+        returns: int
+                the maximum length of the sequences
+        """
         assert len(prefixes_tokenized) == len(targets_tokenized)
         prefix_lengths = [prefix.shape[0] for prefix in prefixes_tokenized]
         target_lengths = [target.shape[0] for target in targets_tokenized]
@@ -201,57 +239,29 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
             [plen + tlen for plen, tlen in zip(prefix_lengths, target_lengths)]
         )
 
-    def batch_for_step2(
-        self,
-        prefixes: List[Int[Tensor, "prefix_lens"]],  # m_c list len
-        suffix_tokens: Int[Tensor, "batch_size suffix_len"],
-        targets: List[Int[Tensor, "target_lens"]],  # m_c list len
-        get_logits=False,
-        batch_gets_bounds_instead_of_mask: bool = True,
-    ):
-        batch_size = suffix_tokens.shape[0]
-        all_sequences = []
-        all_bounds = []
-        for b in range(batch_size):
-            sequences, bounds = self.splice_suffix_to_tokens(
-                prefixes,
-                suffix_tokens[b],
-                targets,
-                get_logits,
-                batch_gets_bounds_instead_of_mask,
-            )
-            all_sequences.append(sequences)
-            all_bounds.append(bounds)
-
-        batch = TokensBatch(
-            tokens=torch.cat(all_sequences, dim=0),
-            target_mask=(
-                torch.cat(all_bounds, dim=0)
-                if not batch_gets_bounds_instead_of_mask
-                else None
-            ),
-            logits=None,
-            target_bounds=bounds if batch_gets_bounds_instead_of_mask else None,
-        )
-        dprint("batch tokens shape", batch.tokens.shape)
-        assert batch.target_mask is None or (
-            batch.target_mask.ndim == 2
-            and batch.target_mask.shape == batch.tokens.shape
-        )
-        assert batch.tokens.ndim == 2
-
-        if get_logits:
-            batch.logits = self.model(batch.tokens).logits
-        return batch
-
-    def _splice_tokens(
-        self,
+    @classmethod
+    def _splice_single_tokens_batch(
+        cls,
         prefix_tokens: Int[Tensor, "prefix_len"],
         suffix_tokens: Int[Tensor, "suffix_len"],
         target_tokens: Int[Tensor, "target_len"],
-        sequence_length: int,
-        batch_gets_bounds_instead_of_mask: bool = False,
     ):
+        """
+        prefix_tokens: Int[Tensor, "batch prefix_len"]
+                prefix tokens
+        suffix_tokens: Int[Tensor, "batch suffix_len"]
+                suffix tokens
+        target_tokens: Int[Tensor, "batch target_len"]
+                target tokens
+        sequence_length: int
+                the maximum length of the sequences
+
+        returns: Int[Tensor, "batch sequence_length"], Bool[Tensor, "batch sequence_length"]
+        """
+        sequence_length = cls._get_max_len(
+            [prefix_tokens], suffix_tokens, [target_tokens]
+        )
+
         suffix_start = prefix_tokens.shape[0]
         target_start = suffix_start + suffix_tokens.shape[0]
         target_end = target_start + target_tokens.shape[0]
@@ -263,51 +273,11 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         sequence = torch.cat(
             [prefix_tokens, suffix_tokens, target_tokens, padding], dim=0
         )
-        if batch_gets_bounds_instead_of_mask:
-            mask_or_bounds = (target_start, target_end)
-        else:
-            mask_or_bounds = torch.zeros(
-                sequence_length, dtype=torch.bool, device=sequence.device
-            )
-            mask_or_bounds[target_start:target_end] = True
 
-        return sequence, mask_or_bounds
+        bounds = (target_start, target_end)
 
-    def splice_suffix_to_tokens(
-        self,
-        prefixes: List[Int[Tensor, "prefix_len"]],
-        suffix_tokens: Int[Tensor, "suffix_len"],
-        targets: List[Int[Tensor, "target_len"]],
-        get_logits=False,
-        batch_gets_bounds_instead_of_mask: bool = False,
-    ) -> TokensBatch:
-        sequence_length = self.get_max_len(prefixes, suffix_tokens, targets)
-        sequences = []
-        masks_list_or_bounds = []
-        for prefix_tokens, target_tokens in zip(prefixes, targets):
-            sequence, mask_or_bounds = self._splice_tokens(
-                prefix_tokens,
-                suffix_tokens,
-                target_tokens,
-                sequence_length,
-                batch_gets_bounds_instead_of_mask,
-            )
-            assert sequence.ndim == 1
-            # assert mask.ndim == 1
-            sequences.append(sequence)
-            masks_list_or_bounds.append(mask_or_bounds)
-
-        out_masks = (
-            torch.stack(masks_list_or_bounds)
-            if not batch_gets_bounds_instead_of_mask
-            else masks_list_or_bounds[0]
-        )
-        return torch.stack(sequences), out_masks
-
-
-def dprint(*args, **kwargs):
-    if DEBUG:
-        print(*args, **kwargs)
+        assert sequence.ndim == 1
+        return sequence, bounds
 
 
 def main(model, embedding_model):
@@ -356,11 +326,6 @@ def main(model, embedding_model):
 
         wtemaybe = model.get_input_embeddings()
         print(wtemaybe)
-
-
-def dprint(*args, **kwargs):
-    if DEBUG:
-        print(*args, **kwargs)
 
 
 if __name__ == "__main__":

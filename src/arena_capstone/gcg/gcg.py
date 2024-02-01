@@ -1,6 +1,5 @@
 # Glen Taggart (nqgl) if there are any issues/questions
 
-from logging import config
 import arena_capstone.gcg.topk_gradients as topkgrad
 from arena_capstone.gcg.embedding_model import EmbeddingFriendlyForCausalLM
 
@@ -20,6 +19,8 @@ from dataclasses import dataclass
 import torch
 import einops
 import wandb
+from tqdm import tqdm
+from colorama import Fore, Back, Style
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -68,6 +69,7 @@ class GCG:
         """
         if self.cfg.use_wandb:
             wandb.init(project="gcg", config=self.cfg)
+            table = wandb.Table(columns=["prefix", "suffix", "completion", "step"])
 
         prefixes = self.tokenizer.encode_plus(self.cfg.prefix_str).input_ids
         prefixes = [torch.tensor(prefixes, dtype=torch.long, device=self.cfg.device)]
@@ -77,7 +79,7 @@ class GCG:
 
         for run_num in range(self.cfg.T):  # repeat T times
             token_grad_batch = self.token_gradient_generator.get_token_gradients(
-                prefixes, self.suffix, targets, print_loss=True
+                prefixes, self.suffix, targets
             )
             replacements = topkgrad.top_k_substitutions(token_grad_batch, self.cfg.k)
             next_suffixes = topkgrad.sample_replacements(
@@ -130,8 +132,44 @@ class GCG:
             if self.cfg.use_wandb:
                 wandb.log({"loss": losses[best_suffix_idx].item()})
                 wandb.log({"suffix": self.tokenizer.decode(best_suffix)})
+                if run_num % 10 == 0:
+                    table.add_data(
+                        self.cfg.prefix_str,
+                        self.tokenizer.decode(best_suffix),
+                        get_completion(self),
+                        str(run_num + 1),
+                    )
 
             del token_grad_batch.suffix_tensor
+
+        if self.cfg.use_wandb:
+            wandb.log({"Table": table})
+            wandb.finish()
+
+
+def get_completion(gcg: GCG):
+    tokens = torch.cat(
+        [
+            torch.tensor(
+                gcg.tokenizer.encode_plus(gcg.cfg.prefix_str).input_ids,
+                device=gcg.suffix.device,
+                dtype=torch.long,
+            ),
+            gcg.suffix,
+        ]
+    )
+    target = gcg.tokenizer.encode_plus(gcg.cfg.target_str).input_ids
+
+    all_ones_mask = torch.ones_like(tokens).bool()
+
+    gen = gcg.model.generate(
+        tokens.unsqueeze(0),
+        max_length=tokens.shape[0] + len(target),
+        attention_mask=all_ones_mask.unsqueeze(0),
+        pad_token_id=gcg.tokenizer.pad_token_id,
+    ).squeeze()
+
+    return gcg.tokenizer.decode(gen[tokens.shape[0] :])
 
 
 def generate(gcg: GCG):
@@ -146,23 +184,58 @@ def generate(gcg: GCG):
         ]
     )
 
-    gen = gcg.model.generate(tokens.unsqueeze(0), max_length=30).squeeze()
-    print("generated:", gcg.tokenizer.decode(gen))
+    all_ones_mask = torch.ones_like(tokens).bool()
+
+    target = gcg.tokenizer.encode_plus(gcg.cfg.target_str).input_ids
+    gen = gcg.model.generate(
+        tokens.unsqueeze(0),
+        max_length=tokens.shape[0] + len(target),
+        attention_mask=all_ones_mask.unsqueeze(0),
+        pad_token_id=gcg.tokenizer.pad_token_id,
+    ).squeeze()
+
+    prefix_text = gcg.tokenizer.decode(tokens[: -gcg.suffix.shape[0]])
+    suffix_text = gcg.tokenizer.decode(tokens[-gcg.suffix.shape[0] :])
+    generated_text = gcg.tokenizer.decode(gen[tokens.shape[0] :])
+
+    print(
+        f"goal:     "
+        + Fore.BLUE
+        + prefix_text
+        + Fore.RED
+        + suffix_text
+        + Fore.GREEN
+        + gcg.cfg.target_str
+    )
+    print(Style.RESET_ALL, end="")
+
+    print(
+        f"generated:"
+        + Fore.BLUE
+        + prefix_text
+        + Fore.RED
+        + suffix_text
+        + Fore.GREEN
+        + generated_text
+    )
+    print(Style.RESET_ALL, end="")
 
 
 def main():
     cfg = GCGConfig(
         suffix=torch.randint(0, 50257, (6,), device=DEVICE),
-        prefix_str="The cat",
-        target_str=" is a dawg",
-        batch_size=50,
-        T=200,
-        k=300,
-        use_wandb=False,
+        prefix_str="That cat over there",
+        target_str=" is a dawg if",
+        batch_size=512,
+        T=2000,
+        k=500,
+        use_wandb=True,
     )
     gcg = GCG(cfg=cfg, model=AutoModelForCausalLM.from_pretrained("gpt2"))
     gcg.gcg(print_between=(not cfg.use_wandb))
+
     generate(gcg)
+
     # m: PreTrainedModel = gcg.model
     # tokens = torch.cat(
     #     [
