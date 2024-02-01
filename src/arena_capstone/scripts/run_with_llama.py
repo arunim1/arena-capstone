@@ -1,14 +1,13 @@
-from transformers import (
-    LlamaTokenizer,
-    LlamaForCausalLM,
-)
-from arena_capstone.algorithm.embedding_model import EmbeddingFriendlyForCausalLM
-from arena_capstone.algorithm.gcg import GCGConfig, GCG
-from arena_capstone.algorithm.upo import UPOConfig, UPO
+import os
 
 import pandas as pd
 import torch
-import os
+from transformers import LlamaForCausalLM, LlamaTokenizer
+
+from arena_capstone.algorithm.embedding_model import \
+    EmbeddingFriendlyForCausalLM
+from arena_capstone.algorithm.gcg import GCG, GCGConfig
+from arena_capstone.algorithm.upo import UPO, UPOConfig
 
 # from nqgl.mlutils.time_gpu import ProfileFunc, timedfunc_wrapper
 
@@ -19,7 +18,6 @@ token = os.getenv("HF_TOKEN")
 
 
 def get_llama(device="cuda"):
-
     llamamodel: LlamaForCausalLM = LlamaForCausalLM.from_pretrained(
         model_str, token=token
     )

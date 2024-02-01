@@ -1,7 +1,8 @@
 from typing import List
-from torch import Tensor
-from jaxtyping import Float, Int, Bool
+
 import torch
+from jaxtyping import Bool, Float, Int
+from torch import Tensor
 from transformers import AutoTokenizer
 
 

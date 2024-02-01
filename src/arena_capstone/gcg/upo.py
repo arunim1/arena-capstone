@@ -1,30 +1,25 @@
 # Glen and Arumin
 
+import gc
+from dataclasses import dataclass
 from logging import config
-import arena_capstone.algorithm.topk_gradients as topkgrad
-from arena_capstone.algorithm.embedding_model import EmbeddingFriendlyForCausalLM
+from typing import List, Optional, Set, Tuple, Union
 
+import einops
+import pandas as pd
+import torch
+import transformers
+import wandb
+from colorama import Back, Fore, Style
+from jaxtyping import Bool, Float, Int
+from torch import Tensor
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 
+import arena_capstone.algorithm.topk_gradients as topkgrad
 from arena_capstone.algorithm.embedding_model import (
-    EmbeddingFriendlyForCausalLM,
-    EmbeddingFriendlyModel,
-    EmbeddedBatch,
-)
-from arena_capstone.algorithm.token_gradients import TokenGradients
+    EmbeddedBatch, EmbeddingFriendlyForCausalLM, EmbeddingFriendlyModel)
 from arena_capstone.algorithm.gcg import GCGConfig
-import transformers
-from typing import List, Set, Tuple, Union, Optional
-from jaxtyping import Float, Int, Bool
-from torch import Tensor
-from dataclasses import dataclass
-import torch
-import einops
-import wandb
-from colorama import Fore, Back, Style
-import gc
-import pandas as pd
-
+from arena_capstone.algorithm.token_gradients import TokenGradients
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -161,7 +156,6 @@ class UPO:
 
 
 def get_completions(upo: UPO):
-
     preplussuffixes = [torch.cat([prefix, upo.suffix]) for prefix in upo.cfg.prefixes]
     output = []
     for i, (tokens, target) in enumerate(zip(preplussuffixes, upo.cfg.targets)):
@@ -188,7 +182,6 @@ def get_completions(upo: UPO):
 
 
 def generate(upo: UPO):
-
     preplussuffixes = [torch.cat([prefix, upo.suffix]) for prefix in upo.cfg.prefixes]
     for i, (tokens, target) in enumerate(zip(preplussuffixes, upo.cfg.targets)):
         all_ones_mask = torch.ones_like(tokens).bool()

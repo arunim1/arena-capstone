@@ -1,12 +1,13 @@
 # Glen Taggart (nqgl) if there are any issues/questions
 
-import torch
-from transformers import AutoModelForCausalLM, PreTrainedModel
-import torch.nn.functional as F
-from jaxtyping import Float, Int, Bool
-from typing import List, Optional, Tuple
-from torch import Tensor
 from dataclasses import dataclass
+from typing import List, Optional, Tuple
+
+import torch
+import torch.nn.functional as F
+from jaxtyping import Bool, Float, Int
+from torch import Tensor
+from transformers import AutoModelForCausalLM, PreTrainedModel
 
 DEBUG = False
 

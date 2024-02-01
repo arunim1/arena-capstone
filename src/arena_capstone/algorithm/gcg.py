@@ -1,26 +1,22 @@
 # Glen Taggart (nqgl) if there are any issues/questions
 
-import arena_capstone.algorithm.topk_gradients as topkgrad
-from arena_capstone.algorithm.embedding_model import EmbeddingFriendlyForCausalLM
+from dataclasses import dataclass
+from typing import List, Optional, Set, Tuple, Union
 
+import einops
+import torch
+import transformers
+import wandb
+from colorama import Back, Fore, Style
+from jaxtyping import Bool, Float, Int
+from torch import Tensor
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 
+import arena_capstone.algorithm.topk_gradients as topkgrad
 from arena_capstone.algorithm.embedding_model import (
-    EmbeddingFriendlyForCausalLM,
-    EmbeddingFriendlyModel,
-    EmbeddedBatch,
-)
+    EmbeddedBatch, EmbeddingFriendlyForCausalLM, EmbeddingFriendlyModel)
 from arena_capstone.algorithm.token_gradients import TokenGradients
-import transformers
-from typing import List, Set, Tuple, Union, Optional
-from jaxtyping import Float, Int, Bool
-from torch import Tensor
-from dataclasses import dataclass
-import torch
-import einops
-import wandb
-from tqdm import tqdm
-from colorama import Fore, Back, Style
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 

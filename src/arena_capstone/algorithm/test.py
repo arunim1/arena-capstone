@@ -1,8 +1,8 @@
 # %%
 import transformers
 
-from arena_capstone.algorithm.embedding_model import EmbeddingFriendlyForCausalLM
-
+from arena_capstone.algorithm.embedding_model import \
+    EmbeddingFriendlyForCausalLM
 
 model: transformers.PreTrainedModel = transformers.AutoModelForCausalLM.from_pretrained(
     "gpt2"
@@ -89,11 +89,12 @@ print(a.grad)  # tensor([1., 1.])
 print(b.grad)  # tensor([1., 1., 1.])
 
 
+from dataclasses import dataclass
+
+import torch
 # %%
 from jaxtyping import Float
 from torch import Tensor
-import torch
-from dataclasses import dataclass
 
 
 @dataclass
@@ -110,7 +111,8 @@ b2 = Batch(embeddings={}, logits="hi")
 # model.embed
 
 # %%
-from arena_capstone.algorithm.embedding_model import EmbeddingFriendlyForCausalLM
+from arena_capstone.algorithm.embedding_model import \
+    EmbeddingFriendlyForCausalLM
 
 # %%
 m = EmbeddingFriendlyForCausalLM(model)
