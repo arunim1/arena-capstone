@@ -90,7 +90,7 @@ class UPO:
                 replacements, self.suffix, self.cfg.batch_size
             )
             with torch.inference_mode():
-                tokens_batch = self.embedding_model.batch_for_step2(
+                tokens_batch = self.embedding_model.splice_tokens_batch(
                     prefixes[:m_c], next_suffixes, targets[:m_c], get_logits=True
                 )
 

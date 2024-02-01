@@ -74,7 +74,7 @@ class UPO:
         prefixes = self.cfg.prefixes
         targets = self.cfg.targets
         m = len(prefixes)
-        m_c = m
+        m_c = 1
         for run_num in range(self.cfg.T):  # repeat T times
             token_grad_batch = self.token_gradient_generator.get_token_gradients(
                 prefixes[:m_c], self.suffix, targets[:m_c]
@@ -94,8 +94,8 @@ class UPO:
 
             with torch.inference_mode():
                 for i in range(m_c):
-                    tokens_batch = self.embedding_model.batch_for_step2(
-                        [prefixes[i]], next_suffixes, [targets[i]], get_logits=True
+                    tokens_batch = self.embedding_model.splice_tokens_batch(
+                        prefixes[i], next_suffixes, targets[i], get_logits=True
                     )
 
                     losses = self.token_gradient_generator.get_loss_looping(
@@ -131,16 +131,20 @@ class UPO:
                     print("m_c:", m_c)
                     print(Style.RESET_ALL)
             if self.cfg.use_wandb:
-                wandb.log({"loss": maxes_over_batch[best_suffix_idx].item()}, step=run_num+1)
-                wandb.log({"m_c": m_c}, step=run_num+1)
+                wandb.log(
+                    {"loss": maxes_over_batch[best_suffix_idx].item()}, step=run_num + 1
+                )
+                wandb.log({"m_c": m_c}, step=run_num + 1)
                 if run_num % 50 == 0:
                     completions = get_completions(self)
                     for _, (prefix, suffix, completion) in enumerate(completions):
-                        table.add_data(prefix, suffix, completion, run_num+1)
+                        table.add_data(prefix, suffix, completion, run_num + 1)
 
         if self.cfg.use_wandb:
-            wandb.log({"loss": maxes_over_batch[best_suffix_idx].item()}, step=run_num+1)
-            wandb.log({"m_c": m_c}, step=run_num+1)
+            wandb.log(
+                {"loss": maxes_over_batch[best_suffix_idx].item()}, step=run_num + 1
+            )
+            wandb.log({"m_c": m_c}, step=run_num + 1)
             wandb.log({"table": table})
 
 
@@ -258,13 +262,13 @@ def main():
 
     cfg = UPOConfig(
         suffix=torch.randint(0, 50257, (10,), device="cuda"),
-        batch_size=30,
+        batch_size=128,
         prefixes=prefixes,
         targets=targets,
         T=80,
-        k=5,
+        k=100,
         use_wandb=False,
-        threshold=5,
+        threshold=1,
     )
 
     upo = UPO(cfg=cfg, model=model)

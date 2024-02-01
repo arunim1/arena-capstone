@@ -68,8 +68,8 @@ class TokenGradients:
         """
         get loss for when looping memory use optimization in UPO algorithm
         """
-                
-        target_start, target_end =  batch.target_bounds
+
+        target_start, target_end = batch.target_bounds
         low, high = target_start - 1, target_end - 1
 
         indexed = batch.logits[:, torch.arange(low, high)]
@@ -92,12 +92,11 @@ class TokenGradients:
         targets: List[Int[Tensor, "target_len"]],
         looping: bool = False,
     ) -> EmbeddedBatch:
-        batch = self.embedding_model.splice_suffix(
+        batch = self.embedding_model.splice_embedded_batch(
             prefixes,
             suffix_tokens,
             targets,
             get_logits=True,
-            batch_gets_bounds_instead_of_mask=looping,
         )
         assert batch.suffix_tensor.grad is None  # zero grad
         loss = (
