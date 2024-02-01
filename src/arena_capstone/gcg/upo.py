@@ -15,11 +15,14 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 
-import arena_capstone.algorithm.topk_gradients as topkgrad
-from arena_capstone.algorithm.embedding_model import (
-    EmbeddedBatch, EmbeddingFriendlyForCausalLM, EmbeddingFriendlyModel)
-from arena_capstone.algorithm.gcg import GCGConfig
-from arena_capstone.algorithm.token_gradients import TokenGradients
+import topk_gradients as topkgrad
+from embedding_model import (
+    EmbeddedBatch,
+    EmbeddingFriendlyForCausalLM,
+    EmbeddingFriendlyModel,
+)
+from gcg import GCGConfig
+from token_gradients import TokenGradients
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -29,6 +32,7 @@ class UPOConfig:
     prefixes: List[Int[Tensor, "prefix_lens"]]
     targets: List[Int[Tensor, "target_lens"]]
     suffix: Int[Tensor, "batch seq"]
+    post_suffix: Int[Tensor, "batch seq"]
     k: int
     batch_size: int
     threshold: float = 1
@@ -254,10 +258,17 @@ def main():
     print(prefixes)
     print(targets)
 
+    post_suffix_str = "ASSISTANT: "
+    post_suffix = tokenizer(post_suffix_str).input_ids
+    print(post_suffix)
+    assert False
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
     cfg = UPOConfig(
-        suffix=torch.randint(0, 50257, (10,), device="cuda"),
+        suffix=torch.randint(0, 50257, (10,), device=device),
         batch_size=128,
         prefixes=prefixes,
+        post_suffix=post_suffix,
         targets=targets,
         T=500,
         k=100,

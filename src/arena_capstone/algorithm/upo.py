@@ -17,7 +17,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 
 import arena_capstone.algorithm.topk_gradients as topkgrad
 from arena_capstone.algorithm.embedding_model import (
-    EmbeddedBatch, EmbeddingFriendlyForCausalLM, EmbeddingFriendlyModel)
+    EmbeddedBatch,
+    EmbeddingFriendlyForCausalLM,
+    EmbeddingFriendlyModel,
+)
 from arena_capstone.algorithm.gcg import GCGConfig
 from arena_capstone.algorithm.token_gradients import TokenGradients
 
@@ -29,6 +32,7 @@ class UPOConfig:
     prefixes: List[Int[Tensor, "prefix_lens"]]
     targets: List[Int[Tensor, "target_lens"]]
     suffix: Int[Tensor, "batch seq"]
+    post_suffix: Int[Tensor, "batch seq"]
     k: int
     batch_size: int
     threshold: float = 1
@@ -53,7 +57,8 @@ class UPO:
             if embedding_model is None
             else embedding_model
         )
-        self.token_gradient_generator = TokenGradients(model, self.embedding_model)
+        self.token_gradient_generator = TokenGradients(
+            model, self.embedding_model)
         self.tokenizer = AutoTokenizer.from_pretrained(self.cfg.modelname)
         self.suffix = cfg.suffix.clone()
         self.table = (
@@ -75,10 +80,12 @@ class UPO:
         m = len(prefixes)
         m_c = 1
         for run_num in range(self.cfg.T):  # repeat T times
+            print("run_num ", run_num)
             token_grad_batch = self.token_gradient_generator.get_token_gradients(
-                prefixes[:m_c], self.suffix, targets[:m_c]
+                prefixes[:m_c], self.suffix, self.cfg.post_suffix, targets[:m_c]
             )
-            replacements = topkgrad.top_k_substitutions(token_grad_batch, self.cfg.k)
+            replacements = topkgrad.top_k_substitutions(
+                token_grad_batch, self.cfg.k)
             # del token_grad_batch
             # gc.collect()
             next_suffixes = topkgrad.sample_replacements(
@@ -87,13 +94,18 @@ class UPO:
             maxes_over_batch = torch.full(
                 (self.cfg.batch_size,), -torch.inf, device=self.cfg.device
             )
-            sum_over_batch = torch.zeros(self.cfg.batch_size, device=self.cfg.device)
+            sum_over_batch = torch.zeros(
+                self.cfg.batch_size, device=self.cfg.device)
 
             with torch.inference_mode():
                 # the pog for loop
                 for i in range(m_c):
                     tokens_batch = self.embedding_model.splice_tokens_batch(
-                        prefixes[i], next_suffixes, targets[i], get_logits=True
+                        prefixes[i],
+                        next_suffixes,
+                        self.cfg.post_suffix,
+                        targets[i],
+                        get_logits=True,
                     )
 
                     losses = self.token_gradient_generator.get_loss_looping(
@@ -136,7 +148,8 @@ class UPO:
                 if run_num % 50 == 0:
                     completions = get_completions(self)
                     for prefix, suffix, completion in completions:
-                        self.table.add_data(prefix, suffix, completion, run_num + 1)
+                        self.table.add_data(
+                            prefix, suffix, completion, run_num + 1)
 
         if self.cfg.use_wandb:
             wandb.log(
@@ -153,10 +166,12 @@ class UPO:
             if self.cfg.use_wandb:
                 wandb.log({"table": self.table})
                 wandb.finish()
+            raise e
 
 
 def get_completions(upo: UPO):
-    preplussuffixes = [torch.cat([prefix, upo.suffix]) for prefix in upo.cfg.prefixes]
+    preplussuffixes = [torch.cat([prefix, upo.suffix])
+                       for prefix in upo.cfg.prefixes]
     output = []
     for i, (tokens, target) in enumerate(zip(preplussuffixes, upo.cfg.targets)):
         all_ones_mask = torch.ones_like(tokens).bool()
@@ -168,8 +183,8 @@ def get_completions(upo: UPO):
             pad_token_id=upo.tokenizer.pad_token_id,
         ).squeeze()
         prefix_text = upo.tokenizer.decode(tokens[: -upo.suffix.shape[0]])
-        suffix_text = upo.tokenizer.decode(tokens[-upo.suffix.shape[0] :])
-        generated_text = upo.tokenizer.decode(gen[tokens.shape[0] :])
+        suffix_text = upo.tokenizer.decode(tokens[-upo.suffix.shape[0]:])
+        generated_text = upo.tokenizer.decode(gen[tokens.shape[0]:])
 
         output.append(
             (
@@ -182,7 +197,8 @@ def get_completions(upo: UPO):
 
 
 def generate(upo: UPO):
-    preplussuffixes = [torch.cat([prefix, upo.suffix]) for prefix in upo.cfg.prefixes]
+    preplussuffixes = [torch.cat([prefix, upo.suffix])
+                       for prefix in upo.cfg.prefixes]
     for i, (tokens, target) in enumerate(zip(preplussuffixes, upo.cfg.targets)):
         all_ones_mask = torch.ones_like(tokens).bool()
 
@@ -193,8 +209,8 @@ def generate(upo: UPO):
             pad_token_id=upo.tokenizer.pad_token_id,
         ).squeeze()
         prefix_text = upo.tokenizer.decode(tokens[: -upo.suffix.shape[0]])
-        suffix_text = upo.tokenizer.decode(tokens[-upo.suffix.shape[0] :])
-        generated_text = upo.tokenizer.decode(gen[tokens.shape[0] :])
+        suffix_text = upo.tokenizer.decode(tokens[-upo.suffix.shape[0]:])
+        generated_text = upo.tokenizer.decode(gen[tokens.shape[0]:])
 
         print(
             f"{i} goal:     "
@@ -233,7 +249,8 @@ def main():
         "is a cat and",
     ]
 
-    harmful_behavior_data = pd.read_csv("./data/advbench/harmful_behaviors.csv")
+    harmful_behavior_data = pd.read_csv(
+        "./data/advbench/harmful_behaviors.csv")
     harmful_behavior_data.head()
     prefix_strs = harmful_behavior_data["goal"].tolist()[:1]
     target_strs = harmful_behavior_data["target"].tolist()[:1]
@@ -251,11 +268,14 @@ def main():
         for tokens in tokenizer(prefix_strs).input_ids
     ]
 
-    print(prefixes)
-    print(targets)
+    post_suffix_str = "ASSISTANT: "
+    post_suffix = tokenizer(post_suffix_str, return_tensors="pt").input_ids
+    post_suffix = post_suffix.squeeze()
+    print(post_suffix.shape)
 
     cfg = UPOConfig(
-        suffix=torch.randint(0, 50257, (10,), device="cuda"),
+        suffix=torch.randint(0, 50257, (10,), device=DEVICE),
+        post_suffix=post_suffix,
         batch_size=128,
         prefixes=prefixes,
         targets=targets,

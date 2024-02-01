@@ -82,15 +82,18 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         self,
         prefixes: List[Int[Tensor, "prefix_len"]],
         suffix_tokens: Int[Tensor, "suffix_len"],
+        post_suffix_tokens: Int[Tensor, "post_suffix_len"],
         targets: List[Int[Tensor, "target_len"]],
         get_logits=False,
     ) -> EmbeddedBatch:
         """
-        prefixes: Int[Tensor, "batch prefix_len"]
+        prefixes: List[Int[Tensor, "prefix_len"]]
                 prefix tokens
         suffix_tokens: Int[Tensor, "batch suffix_len"]
                 suffix_tokens tokens
-        targets: Int[Tensor, "batch target_len"]
+        post_suffix_tokens: Int[Tensor, "batch post_suffix_len"]
+                post_suffix_tokens tokens
+        targets: List[Int[Tensor, "target_len"]]
                 target tokens
 
         returns:
@@ -98,7 +101,9 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
                 Bool[Tensor, "batch seq"],
                 Float[Tensor, "batch suffix_len d_vocab"]
         """
-        sequence_length = self._get_max_len(prefixes, suffix_tokens, targets)
+        sequence_length = self._get_max_len(
+            prefixes, suffix_tokens, post_suffix_tokens, targets
+        )
         sequences = []
         mask_list = []
         hot_suffix = self._suffix_to_hot(suffix_tokens)
@@ -106,6 +111,7 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
             sequence, mask = self._splice_single_embedded_batch(
                 prefix_tokens,
                 hot_suffix,
+                post_suffix_tokens,
                 target_tokens,
                 sequence_length,
             )
@@ -145,33 +151,35 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         self,
         prefix_tokens: Int[Tensor, "prefix_len"],
         hot_suffix: Float[Tensor, "suffix_len vocab"],
+        post_suffix_tokens: Int[Tensor, "post_suffix_len"],
         target_tokens: Int[Tensor, "target_len"],
         sequence_length: int,
     ):
         suffix_start = prefix_tokens.shape[0]
-        target_start = suffix_start + hot_suffix.shape[0]
+
+        target_start = suffix_start + hot_suffix.shape[0] + post_suffix_tokens.shape[0]
         target_end = target_start + target_tokens.shape[0]
 
         prefix = self.embed(prefix_tokens, start_position=0)
         suffix = self.embed(hot_suffix, start_position=suffix_start, onehot=True)
-        target = self.embed(target_tokens, start_position=target_start)
+        post_suffix = self.embed(post_suffix_tokens)
+        target = self.embed(target_tokens)
         padding = (
             torch.zeros(sequence_length - target_end, device=prefix.device)
             .unsqueeze(-1)
             .expand(-1, self.model.config.hidden_size)
             .unsqueeze(0)
         )
-        sequence = torch.cat([prefix, suffix, target, padding], dim=1)
-        mask_or_bounds = torch.zeros(
-            sequence_length, dtype=torch.bool, device=sequence.device
-        )
-        mask_or_bounds[target_start:target_end] = True
-        return sequence, mask_or_bounds
+        sequence = torch.cat([prefix, suffix, post_suffix, target, padding], dim=1)
+        mask = torch.zeros(sequence_length, dtype=torch.bool, device=sequence.device)
+        mask[target_start:target_end] = True
+        return sequence, mask
 
     def splice_tokens_batch(
         self,
         prefix: Int[Tensor, "prefix_lens"],  # m_c list len
         suffix_tokens: Int[Tensor, "batch_size suffix_len"],
+        post_suffix: Int[Tensor, "post_suffix_len"],
         target: Int[Tensor, "target_lens"],  # m_c list len
         get_logits=False,
     ) -> TokensBatch:
@@ -187,13 +195,15 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         Returns:
             TokensBatch: A batch of tokens with spliced suffix tokens.
         """
-        batch = self._splice_tokens_batch(prefix, suffix_tokens, target)
+        batch = self._splice_tokens_batch(prefix, suffix_tokens, post_suffix, target)
         if get_logits:
             batch.logits = self.model(batch.tokens).logits
         return batch
 
     @classmethod
-    def _splice_tokens_batch(cls, prefix, suffix_tokens, target) -> TokensBatch:
+    def _splice_tokens_batch(
+        cls, prefix, suffix_tokens, post_suffix, target
+    ) -> TokensBatch:
         batch_size = suffix_tokens.shape[0]
         all_sequences = []
         all_bounds = []
@@ -201,6 +211,7 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
             sequences, bounds = cls._splice_single_tokens_batch(
                 prefix,
                 suffix_tokens[b],
+                post_suffix,
                 target,
             )
             all_sequences.append(sequences)
@@ -219,6 +230,7 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         cls,
         prefixes_tokenized: List[Int[Tensor, "prefix_len"]],
         suffix: Int[Tensor, "suffix_len"],
+        post_suffix: Int[Tensor, "post_suffix_len"],
         targets_tokenized: List[Int[Tensor, "target_len"]],
     ):
         """
@@ -236,8 +248,10 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         prefix_lengths = [prefix.shape[0] for prefix in prefixes_tokenized]
         target_lengths = [target.shape[0] for target in targets_tokenized]
 
-        return suffix.shape[0] + max(
-            [plen + tlen for plen, tlen in zip(prefix_lengths, target_lengths)]
+        return (
+            suffix.shape[0]
+            + post_suffix.shape[0]
+            + max([plen + tlen for plen, tlen in zip(prefix_lengths, target_lengths)])
         )
 
     @classmethod
@@ -245,6 +259,7 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         cls,
         prefix_tokens: Int[Tensor, "prefix_len"],
         suffix_tokens: Int[Tensor, "suffix_len"],
+        post_suffix: Int[Tensor, "post_suffix_len"],
         target_tokens: Int[Tensor, "target_len"],
     ):
         """
@@ -252,6 +267,8 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
                 prefix tokens
         suffix_tokens: Int[Tensor, "batch suffix_len"]
                 suffix tokens
+        post_suffix: Int[Tensor, "post_suffix_len"],
+                post-suffix tokens
         target_tokens: Int[Tensor, "batch target_len"]
                 target tokens
         sequence_length: int
@@ -260,11 +277,11 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         returns: Int[Tensor, "batch sequence_length"], Bool[Tensor, "batch sequence_length"]
         """
         sequence_length = cls._get_max_len(
-            [prefix_tokens], suffix_tokens, [target_tokens]
+            [prefix_tokens], suffix_tokens, post_suffix, [target_tokens]
         )
 
         suffix_start = prefix_tokens.shape[0]
-        target_start = suffix_start + suffix_tokens.shape[0]
+        target_start = suffix_start + suffix_tokens.shape[0] + post_suffix.shape[0]
         target_end = target_start + target_tokens.shape[0]
 
         padding = torch.zeros(
@@ -272,7 +289,7 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         )
         assert sequence_length - target_end >= 0
         sequence = torch.cat(
-            [prefix_tokens, suffix_tokens, target_tokens, padding], dim=0
+            [prefix_tokens, suffix_tokens, post_suffix, target_tokens, padding], dim=0
         )
 
         bounds = (target_start, target_end)
@@ -295,7 +312,7 @@ def main(model, embedding_model):
             torch.randint(0, model.config.vocab_size, (5,)),
         ]
         batch = embedding_model.splice_suffix(prefixes, suffix, targets)
-        print(batch)
+
         targets[-1] = torch.cat(
             [targets[-1], torch.randint(0, model.config.vocab_size, (5,))]
         )
@@ -307,8 +324,6 @@ def main(model, embedding_model):
             dim=0,
         )
 
-        print("tokens", tokens.shape)
-        print("batch", batch.embeddings.shape)
         response = model(tokens)
         logits = response.logits
         embed_logits = embedding_model.forward_from_embed(batch.embeddings).logits

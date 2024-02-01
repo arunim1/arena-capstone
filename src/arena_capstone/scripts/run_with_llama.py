@@ -4,8 +4,7 @@ import pandas as pd
 import torch
 from transformers import LlamaForCausalLM, LlamaTokenizer
 
-from arena_capstone.algorithm.embedding_model import \
-    EmbeddingFriendlyForCausalLM
+from arena_capstone.algorithm.embedding_model import EmbeddingFriendlyForCausalLM
 from arena_capstone.algorithm.gcg import GCG, GCGConfig
 from arena_capstone.algorithm.upo import UPO, UPOConfig
 

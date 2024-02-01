@@ -7,15 +7,19 @@ from typing import List, Optional, Tuple, Union
 
 import einops
 import torch
+
 # from nqgl.mlutils.norepr import fastpartial
 import torch.nn.functional as F
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from arena_capstone.algorithm.embedding_model import (
-    EmbeddedBatch, EmbeddingFriendlyForCausalLM, EmbeddingFriendlyModel,
-    TokensBatch)
+from embedding_model import (
+    EmbeddedBatch,
+    EmbeddingFriendlyForCausalLM,
+    EmbeddingFriendlyModel,
+    TokensBatch,
+)
 
 DEBUG = False
 
@@ -87,12 +91,14 @@ class TokenGradients:
         self,
         prefixes: List[Int[Tensor, "prefix_len"]],
         suffix_tokens: Int[Tensor, "suffix_len"],
+        post_suffix_tokens: Int[Tensor, "post_suffix_len"],
         targets: List[Int[Tensor, "target_len"]],
         looping: bool = False,
     ) -> EmbeddedBatch:
         batch = self.embedding_model.splice_embedded_batch(
             prefixes,
             suffix_tokens,
+            post_suffix_tokens,
             targets,
             get_logits=True,
         )

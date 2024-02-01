@@ -13,10 +13,13 @@ from torch import Tensor
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 
-import arena_capstone.algorithm.topk_gradients as topkgrad
-from arena_capstone.algorithm.embedding_model import (
-    EmbeddedBatch, EmbeddingFriendlyForCausalLM, EmbeddingFriendlyModel)
-from arena_capstone.algorithm.token_gradients import TokenGradients
+import topk_gradients as topkgrad
+from embedding_model import (
+    EmbeddedBatch,
+    EmbeddingFriendlyForCausalLM,
+    EmbeddingFriendlyModel,
+)
+from token_gradients import TokenGradients
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -26,6 +29,7 @@ class GCGConfig:
     suffix: Int[Tensor, "batch seq"]
     k: int
     prefix_str: str
+    post_suffix_str: str
     target_str: str
     batch_size: int
     device: str = DEVICE
@@ -220,18 +224,17 @@ def generate(gcg: GCG):
 def main():
     cfg = GCGConfig(
         suffix=torch.randint(0, 50257, (6,), device=DEVICE),
-        prefix_str="That cat over there",
-        target_str=" is a dawg if",
+        prefix_str="USER: That cat over there",
+        post_suffix_str="ASSISTANT: ",
+        target_str=" is a dawg",
         batch_size=512,
         T=2000,
         k=500,
-        use_wandb=True,
+        use_wandb=False,
     )
     gcg = GCG(cfg=cfg, model=AutoModelForCausalLM.from_pretrained("gpt2"))
     gcg.gcg(print_between=(not cfg.use_wandb))
 
-    generate(gcg)
-    generate(gcg)
     generate(gcg)
     # m: PreTrainedModel = gcg.model
     # tokens = torch.cat(
