@@ -93,7 +93,6 @@ class TokenGradients:
         suffix_tokens: Int[Tensor, "suffix_len"],
         post_suffix_tokens: Int[Tensor, "post_suffix_len"],
         targets: List[Int[Tensor, "target_len"]],
-        looping: bool = False,
     ) -> EmbeddedBatch:
         batch = self.embedding_model.splice_embedded_batch(
             prefixes,
@@ -103,11 +102,7 @@ class TokenGradients:
             get_logits=True,
         )
         assert batch.suffix_tensor.grad is None  # zero grad
-        loss = (
-            self.get_loss(batch, targets)
-            if not looping
-            else self.get_loss_looping(batch, targets)
-        )
+        loss = self.get_loss(batch, targets)
         loss.backward()
         return batch
 

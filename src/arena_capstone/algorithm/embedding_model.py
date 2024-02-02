@@ -17,11 +17,11 @@ DEBUG = False
 
 @dataclass
 class EmbeddedBatch:
-    outputs: Union[Tuple, CausalLMOutputWithPast]
     embeddings: Float[Tensor, "batch seq d_model"]
     target_mask: Optional[Bool[Tensor, "batch seq"]]
     suffix_tensor: Float[Tensor, "suffix_length d_vocab"]
     logits: Optional[Float[Tensor, "batch seq vocab"]]
+    outputs: Union[Tuple, CausalLMOutputWithPast]
 
 
 @dataclass
