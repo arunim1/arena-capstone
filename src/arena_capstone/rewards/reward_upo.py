@@ -28,7 +28,6 @@ from arena_capstone.algorithm.embedding_model import (
 )
 from arena_capstone.algorithm.gcg import GCGConfig
 from arena_capstone.algorithm.token_gradients import TokenGradients
-from rlhf_trojan_competition.src.models import reward_model
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -83,7 +82,10 @@ class RewardUPO:
             wandb.init(project="upo", config=self.cfg)
 
         prefixes = self.cfg.prefixes
-        targets = self.cfg.targets  # TODO replace with generated strings maybe?
+        # TODO replace with generated strings maybe?
+        targets = self.model.generate()
+        targets = self.cfg.targets
+
         m = len(prefixes)
         m_c = 1
         for run_num in range(self.cfg.T):  # repeat T times
