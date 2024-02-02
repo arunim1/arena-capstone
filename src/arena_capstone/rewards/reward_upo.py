@@ -75,6 +75,9 @@ class RewardUPO:
             else None
         )
 
+    def get_prompt(self):
+        return torch.cat([self.cfg.prefixes, self.suffix, self.cfg.post_suffix])
+
     def upo_over_rewards(self, print_between=False):
         """
         datasource: List[List[str]]
@@ -190,7 +193,7 @@ class RewardUPO:
 
     def run(self):
         try:
-            self.upo(print_between=not self.cfg.use_wandb)
+            self.upo_over_rewards(print_between=not self.cfg.use_wandb)
         except Exception as e:
             if self.cfg.use_wandb:
                 wandb.log({"table": self.table})
