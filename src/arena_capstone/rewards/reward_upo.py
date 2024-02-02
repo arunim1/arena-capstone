@@ -15,6 +15,7 @@ from colorama import Back, Fore, Style
 from jaxtyping import Bool, Float, Int
 from torch import Tensor, embedding
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
+from arena_capstone.scripts.run_with_llama import get_llama
 
 from arena_capstone.rewards.reward_generator import (
     RewardGenerator,
@@ -45,6 +46,7 @@ class RewardUPOConfig:
     modelname: str = "gpt2"
     device: str = DEVICE
     use_wandb: bool = False
+    generate_length
 
 
 class RewardUPO:
@@ -84,8 +86,11 @@ class RewardUPO:
         prefixes = self.cfg.prefixes
 
         # TODO replace with generated strings maybe?
-        prompt = torch.cat(self.prefixes, self.suffix, self.cfg.post_suffix)
-        targets = self.model.generate()
+        # prompt = torch.cat([self.prefixes, self.suffix, self.cfg.post_suffix])
+        # targets = self.model.generate(
+        #     prompt, max_length=self.cfg.max_new_tokens, do_sample=True
+        # )
+
         targets = self.cfg.targets
 
         m = len(prefixes)
@@ -276,8 +281,6 @@ def main():
         torch.tensor(tokens, device=DEVICE, dtype=torch.long)
         for tokens in tokenizer(prefix_strs).input_ids
     ]
-
-    from arena_capstone.scripts.run_with_llama import get_llama
 
     reward_model = get_reward_generator()
 
