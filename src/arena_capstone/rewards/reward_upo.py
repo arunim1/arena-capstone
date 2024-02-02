@@ -109,7 +109,7 @@ class RewardUPO:
                 targets=targets[:m_c],
                 get_logits=True,
             )
-            reward = self.reward_model.logit_rewards_from_embedded_batch(
+            reward, end_reward = self.reward_model.logit_rewards_from_embedded_batch(
                 batch=reward_grad_batch,
             )
             loss = torch.sum(reward[reward_grad_batch.target_mask])
@@ -140,7 +140,7 @@ class RewardUPO:
                         get_logits=True,
                     )
 
-                    rewards = self.reward_model.logit_rewards_from_tokens_batch(
+                    rewards, end_reward = self.reward_model.logit_rewards_from_tokens_batch(
                         batch=tokens_batch
                     )
                     low, high = tokens_batch.target_bounds
