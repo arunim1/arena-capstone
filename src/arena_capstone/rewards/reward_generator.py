@@ -142,12 +142,14 @@ class RewardGenerator(RewardModel):
     ):
         assert batch.logits is not None
 
-        self.embedding_model
-        new_embed = batch.embeddings
-        new_embed[batch.target_mask] = self.embedding_model.embed(
+        logits_embed = self.embedding_model.embed(
             F.softmax(batch.logits[batch.target_mask], dim=-1), onehot=True
         )
-
+        new_embed = torch.where(
+            batch.target_mask.unsqueeze(-1),
+            batch.embeddings,
+            logits_embed
+        )
         reward_output = self(
             input_ids=None,
             attention_mask=torch.ones(new_embed.shape[:2], device="cuda"),
