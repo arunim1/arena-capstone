@@ -1,5 +1,3 @@
-# Glen and Arumin
-
 import gc
 from dataclasses import dataclass
 from logging import config
@@ -75,8 +73,8 @@ class RewardUPO:
             else None
         )
 
-    def get_prompt(self):
-        return torch.cat([self.cfg.prefixes, self.suffix, self.cfg.post_suffix])
+    # def get_prompt(self):
+    #     return torch.cat([self.cfg.prefixes, self.suffix, self.cfg.post_suffix])
 
     def upo_over_rewards(self, print_between=False):
         """
@@ -266,7 +264,6 @@ def generate(upo: RewardUPO):
 
 
 def main():
-
     num_prompts = 2
     model, embedding_model, tokenizer = get_llama()
 
@@ -293,7 +290,7 @@ def main():
     print(post_suffix.shape)
 
     cfg = RewardUPOConfig(
-        suffix=torch.randint(0, 50257, (5,), device=DEVICE),
+        suffix=torch.randint(0, model.config.vocab_size, (5,), device=DEVICE),
         post_suffix=post_suffix,
         batch_size=2,
         prefixes=prefixes,
