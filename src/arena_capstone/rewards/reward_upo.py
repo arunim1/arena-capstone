@@ -307,7 +307,8 @@ def main():
         reward_model=reward_model,
         embedding_model=embedding_model,
     )
-    upo.run()
+    with torch.cuda.amp.autocast():
+        upo.run()
 
 
 if __name__ == "__main__":
