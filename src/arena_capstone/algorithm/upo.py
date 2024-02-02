@@ -7,12 +7,14 @@ from typing import List, Optional, Set, Tuple, Union
 
 import einops
 import pandas as pd
+from requests import post
 import torch
 import transformers
 import wandb
 from colorama import Back, Fore, Style
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 
 import arena_capstone.algorithm.topk_gradients as topkgrad
@@ -66,6 +68,11 @@ class UPO:
             if self.cfg.use_wandb
             else None
         )
+        self.tensor_table = (
+            wandb.Table(columns=["suffix_tensor", "step"])
+            if self.cfg.use_wandb
+            else None
+        )
 
     def upo(self, print_between=False):
         """
@@ -78,15 +85,14 @@ class UPO:
         prefixes = self.cfg.prefixes
         targets = self.cfg.targets
         m = len(prefixes)
-        m_c = 1
-        for run_num in range(self.cfg.T):  # repeat T times
-            print("run_num ", run_num)
+        m_c = 56
+        for run_num in tqdm(range(self.cfg.T)):  # repeat T times
             token_grad_batch = self.token_gradient_generator.get_token_gradients(
                 prefixes[:m_c], self.suffix, self.cfg.post_suffix, targets[:m_c]
             )
             replacements = topkgrad.top_k_substitutions(
                 token_grad_batch, self.cfg.k)
-            # del token_grad_batch
+            del token_grad_batch
             # gc.collect()
             next_suffixes = topkgrad.sample_replacements(
                 replacements, self.suffix, self.cfg.batch_size
@@ -116,7 +122,7 @@ class UPO:
                     sum_over_batch += losses
                     assert maxes_over_batch.shape == losses.shape
                     maxes_over_batch = torch.max(maxes_over_batch, losses)
-                    # del tokens_batch
+                    del tokens_batch
 
             # losses_batch_reshaped          ->
             # losses_batch_mean_over_prompt  [num_batches]   -> argmin
@@ -125,8 +131,10 @@ class UPO:
             best_suffix = next_suffixes[best_suffix_idx]
 
             self.suffix = best_suffix
+            self.tensor_table.add_data(self.suffix, run_num + 1)
+
             if maxes_over_batch[best_suffix_idx].max() < self.cfg.threshold and m_c < m:
-                m_c += 1
+                m_c += 4
 
             if print_between:
                 if run_num % 10 == 0:
@@ -140,6 +148,7 @@ class UPO:
                     )
                     print("m_c:", m_c)
                     print(Style.RESET_ALL)
+
             if self.cfg.use_wandb:
                 wandb.log(
                     {"loss": maxes_over_batch[best_suffix_idx].item()}, step=run_num + 1
@@ -157,16 +166,20 @@ class UPO:
             )
             wandb.log({"m_c": m_c}, step=run_num + 1)
             wandb.log({"table": self.table})
+            wandb.log({"suffix_tensor": self.tensor_table})
             wandb.finish()
 
     def run(self):
         try:
             self.upo(print_between=not self.cfg.use_wandb)
-        except Exception as e:
+        except KeyboardInterrupt:
+            print("suffix_tensor", self.suffix.detach().cpu().tolist())
             if self.cfg.use_wandb:
                 wandb.log({"table": self.table})
+                wandb.log({"suffix_tensor": self.tensor_table})
                 wandb.finish()
-            raise e
+        finally:
+            print("suffix_tensor", self.suffix.detach().cpu().tolist())
 
 
 def get_completions(upo: UPO):
@@ -212,12 +225,16 @@ def generate(upo: UPO):
         suffix_text = upo.tokenizer.decode(tokens[-upo.suffix.shape[0]:])
         generated_text = upo.tokenizer.decode(gen[tokens.shape[0]:])
 
+        post_suffix = upo.cfg.post_suffix
+        post_suffix_str = upo.tokenizer.decode(post_suffix)
+
         print(
             f"{i} goal:     "
             + Fore.BLUE
             + prefix_text
             + Fore.RED
             + suffix_text
+            + post_suffix_str
             + Fore.GREEN
             + upo.tokenizer.decode(target)
         )
@@ -229,6 +246,7 @@ def generate(upo: UPO):
             + prefix_text
             + Fore.RED
             + suffix_text
+            + post_suffix_str
             + Fore.GREEN
             + generated_text
         )

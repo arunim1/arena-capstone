@@ -79,8 +79,34 @@ class RewardUPO:
 
     def get_prompt(self):
         # Add batch dim to suffix
-        reshaped_suffix = self.suffix.unsqueeze(0).expand(self.prefix.shape[0], self.suffix.shape[0])
-        return torch.cat((self.prefix, reshaped_suffix, self.post_suffix), dim=1)
+        prompts = [
+            torch.cat((prefix, self.cfg.suffix, self.cfg.post_suffix), dim=0)
+            for prefix in self.cfg.prefixes
+        ]
+        return prompts
+
+
+    def get_next_targets(self, prompts):
+        targets = []
+        for prompt in prompts:
+            all_ones_mask = torch.ones_like(prompt).bool()
+            attention_mask=all_ones_mask.unsqueeze(0),
+
+
+
+            target = self.model.generate( 
+                prompt.unsqueeze(0), 
+                # attention_mask=all_ones_mask.unsqueeze(0),
+                
+                max_length=self.cfg.generate_length,
+                do_sample=True,
+                eos_token_id=1000000,
+            ).squeeze()
+            target = target[prompt.shape[0] :]
+            # print(target.shape)
+            targets.append(target)            
+
+        return targets
 
     def upo_over_rewards(self, print_between=False):
         """
@@ -93,17 +119,15 @@ class RewardUPO:
         prefixes = self.cfg.prefixes
 
         # TODO replace with generated strings maybe?
-        # prompt = self.get_prompt()
-        # targets = self.model.generate(
-        #     prompt, max_length=self.cfg.max_new_tokens, do_sample=True
-        # )
 
-        targets = self.cfg.targets
+        # targets = self.cfg.targets
 
         m = len(prefixes)
         m_c = 1
         for run_num in tqdm(range(self.cfg.T)):  # repeat T times
             # token_grad_batch = self.token_gradient_generator.get_token_gradients()
+            prompt = self.get_prompt()
+            targets = self.get_next_targets(prompt)
 
             reward_grad_batch = self.embedding_model.splice_embedded_batch(
                 prefixes=prefixes[:m_c],
@@ -156,7 +180,7 @@ class RewardUPO:
                     low, high = tokens_batch.target_bounds
 
                     if self.cfg.use_end_reward_selecting:
-                        losses = rewards.end_rewards
+                        losses = rewards.end_rewards.squeeze(-1)
                     else:
                         losses = torch.sum(rewards.rewards[:, low:high], dim=(-1, -2))
 
@@ -179,7 +203,7 @@ class RewardUPO:
             if print_between:
                 if run_num % 10 == 0:
                     if run_num % 20 == 0:
-                        generate(self)
+                        generate(self, targets)
                     print(Back.BLUE + "    ", self.tokenizer.decode(best_suffix))
                     print(
                         "loss opt:",
@@ -195,7 +219,7 @@ class RewardUPO:
                 )
                 wandb.log({"m_c": m_c}, step=run_num + 1)
                 if run_num % 50 == 0:
-                    completions = get_completions(self)
+                    completions = get_completions(self, targets)
                     for prefix, suffix, completion in completions:
                         self.table.add_data(prefix, suffix, completion, run_num + 1)
 
@@ -217,10 +241,11 @@ class RewardUPO:
             raise e
 
 
-def get_completions(upo: RewardUPO):
+def get_completions(upo: RewardUPO, targets: Optional[List[Tensor]] = None):
     preplussuffixes = [torch.cat([prefix, upo.suffix]) for prefix in upo.cfg.prefixes]
     output = []
-    for i, (tokens, target) in enumerate(zip(preplussuffixes, upo.cfg.targets)):
+    targets = targets[: len(preplussuffixes)] if targets is not None else upo.cfg.targets[: len(preplussuffixes)]
+    for i, (tokens, target) in enumerate(zip(preplussuffixes, targets)):
         all_ones_mask = torch.ones_like(tokens).bool()
 
         gen = upo.model.generate(
@@ -243,9 +268,10 @@ def get_completions(upo: RewardUPO):
     return output
 
 
-def generate(upo: RewardUPO):
+def generate(upo: RewardUPO, targets: Optional[List[Tensor]] = None):
     preplussuffixes = [torch.cat([prefix, upo.suffix]) for prefix in upo.cfg.prefixes]
-    for i, (tokens, target) in enumerate(zip(preplussuffixes, upo.cfg.targets)):
+    targets = targets[: len(preplussuffixes)] if targets is not None else upo.cfg.targets[: len(preplussuffixes)]
+    for i, (tokens, target) in enumerate(zip(preplussuffixes, targets)):
         all_ones_mask = torch.ones_like(tokens).bool()
 
         gen = upo.model.generate(
@@ -253,21 +279,22 @@ def generate(upo: RewardUPO):
             max_length=tokens.shape[0] + target.shape[0],
             attention_mask=all_ones_mask.unsqueeze(0),
             pad_token_id=upo.tokenizer.pad_token_id,
+            eos_token_id=100000,
         ).squeeze()
         prefix_text = upo.tokenizer.decode(tokens[: -upo.suffix.shape[0]])
         suffix_text = upo.tokenizer.decode(tokens[-upo.suffix.shape[0] :])
         generated_text = upo.tokenizer.decode(gen[tokens.shape[0] :])
 
-        # print(
-        #     f"{i} goal:     "
-        #     + Fore.BLUE
-        #     + prefix_text
-        #     + Fore.RED
-        #     + suffix_text
-        #     + Fore.GREEN
-        #     + upo.tokenizer.decode(target)
-        # )
-        # print(Style.RESET_ALL, end="")
+        print(
+            f"{i} goal:     "
+            + Fore.BLUE
+            + prefix_text
+            + Fore.RED
+            + suffix_text
+            + Fore.GREEN
+            + upo.tokenizer.decode(target)
+        )
+        print(Style.RESET_ALL, end="")
 
         print(
             f"{i} generated:"
@@ -309,7 +336,7 @@ def main():
     print(post_suffix.shape)
 
     cfg = RewardUPOConfig(
-        suffix=torch.randint(0, model.config.vocab_size, (12,), device=DEVICE),
+        suffix=torch.randint(0, model.config.vocab_size, (15,), device=DEVICE),
         post_suffix=post_suffix,
         batch_size=128,
         prefixes=prefixes,
@@ -329,6 +356,7 @@ def main():
         embedding_model=embedding_model,
         tokenizer=tokenizer,
     )
+    print(upo.get_next_targets(upo.get_prompt()))
     with torch.cuda.amp.autocast():
         upo.run()
 
