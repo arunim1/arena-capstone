@@ -89,6 +89,7 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         post_suffix_tokens: Int[Tensor, "post_suffix_len"],
         targets: List[Int[Tensor, "target_len"]],
         get_logits=False,
+        hot_suffix=None,
     ) -> EmbeddedBatch:
         """
         prefixes: List[Int[Tensor, "prefix_len"]]
@@ -110,7 +111,7 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         )
         sequences = []
         mask_list = []
-        hot_suffix = self._suffix_to_hot(suffix_tokens)
+        hot_suffix = self._suffix_to_hot(suffix_tokens) if hot_suffix is None else hot_suffix   
         for prefix_tokens, target_tokens in zip(prefixes, targets):
             sequence, mask = self._splice_single_embedded_batch(
                 prefix_tokens,
@@ -150,7 +151,7 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         """
         assert suffix_tokens.ndim == 1
         hot = F.one_hot(suffix_tokens, num_classes=self.model.config.vocab_size)
-        hot = hot.half()
+        hot = hot.float()
         hot.requires_grad = True
         return hot
 

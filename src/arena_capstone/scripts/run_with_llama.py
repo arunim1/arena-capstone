@@ -27,6 +27,10 @@ def get_llama(device="cuda"):
 
     return llamamodel, embedding_friendly, tokenizer
 
+def get_llama_tokenizer():
+    tokenizer = LlamaTokenizer.from_pretrained(model_str, token=token)
+    return tokenizer
+
 
 def do_gcg(device):
     llamamodel, embedding_friendly, tokenizer = get_llama(device)

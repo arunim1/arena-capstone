@@ -140,31 +140,44 @@ class RewardGenerator(RewardModel):
     def logit_rewards_from_embedded_batch(
         self,
         batch: EmbeddedBatch,
+        reward_batch: EmbeddedBatch,
     ):
         assert batch.logits is not None
 
         self.embedding_model
-        new_embed = batch.embeddings.half()
+        new_embed = reward_batch.embeddings.half()
         flat_embedded_logits = self.embedding_model.embed(
-            F.softmax(batch.logits[batch.target_mask], dim=-1), onehot=True
+            F.softmax(batch.logits[:, :-1][batch.target_mask[:, 1:]], dim=-1),
+            onehot=True,
         )
+        if flat_embedded_logits.dtype != torch.float16:
+            print("flat_embedded_logits is not float16")
+            flat_embedded_logits = flat_embedded_logits.half()
         # newer_embed = torch.scatter(
         #     new_embed,
         #     0,
         #     index = mask_indices,
         #     src = flat_embedded_logits
         # )
+        if torch.any(torch.isinf(flat_embedded_logits)):
+            print("inf in flat_embedded_logits")
+
+        if torch.any(torch.isinf(new_embed)):
+            print("inf in new_embed")
         newer_embed = torch.masked_scatter(
-            new_embed,
-            batch.target_mask.unsqueeze(-1),
-            flat_embedded_logits
+            new_embed[:, 1:],
+            batch.target_mask[:, 1:].unsqueeze(-1),
+            flat_embedded_logits,
         )
+        newer_embed = torch.cat([new_embed[:, :1], newer_embed], dim=1)
+        if torch.any(torch.isinf(newer_embed)):
+            print("inf in newer_embed")
 
-        # new_embed[batch.target_mask] 
-
+        # new_embed[batch.target_mask]
+        print("newer_embed_shape", newer_embed.shape)
         reward_output = self(
             input_ids=None,
-            attention_mask=torch.ones(new_embed.shape[:2], device="cuda"),
+            attention_mask=torch.ones(newer_embed.shape[:2], device="cuda"),
             inputs_embeds=newer_embed,
         )
         return reward_output
@@ -176,18 +189,21 @@ class RewardGenerator(RewardModel):
         """
         assert batch.logits is not None
         with torch.inference_mode():
-            # target_start, target_end = batch.target_bounds
-            # low, high = (
-            #     target_start - 1,
-            #     target_end,
-            # )  # we do take the last logit here, because we care about all targets
+            # target_start
+            target_start, target_end = batch.target_bounds
+            # low = target_start
+            # high = target_end - 1
+            # we do take the last logit here, because we care about all targets
             # nvm that was wrong I think it's just
-            low, high = batch.target_bounds
-            embedded_tokens = self.embedding_model.embed(batch.tokens[:, :low])
+            # low, high = batch.target_bounds
+            embedded_tokens = self.embedding_model.embed(batch.tokens[:, :target_start])
             embedded_logits = self.embedding_model.embed(
-                F.softmax(batch.logits[:, low:high], dim=-1), onehot=True
+                F.softmax(batch.logits[:, target_start - 1 : target_end - 1], dim=-1),
+                onehot=True,
             )
-            embedded = torch.cat([embedded_tokens.squeeze(0), embedded_logits.squeeze(0)], dim=1)
+            embedded = torch.cat(
+                [embedded_tokens.squeeze(0), embedded_logits.squeeze(0)], dim=1
+            )
             reward_output = self(
                 input_ids=None,
                 attention_mask=torch.ones(embedded.shape[:2], device="cuda"),
