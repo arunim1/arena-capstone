@@ -82,7 +82,9 @@ class RewardUPO:
             wandb.init(project="upo", config=self.cfg)
 
         prefixes = self.cfg.prefixes
+
         # TODO replace with generated strings maybe?
+        prompt = torch.cat(self.prefixes, self.suffix, self.cfg.post_suffix)
         targets = self.model.generate()
         targets = self.cfg.targets
 
@@ -258,6 +260,7 @@ def generate(upo: RewardUPO):
 def main():
 
     num_prompts = 2
+    model, embedding_model, tokenizer = get_llama()
 
     harmful_behavior_data = pd.read_csv("./data/advbench/harmful_behaviors.csv")
     harmful_behavior_data.head()
@@ -276,7 +279,6 @@ def main():
 
     from arena_capstone.scripts.run_with_llama import get_llama
 
-    model, embedding_model, tokenizer = get_llama()
     reward_model = get_reward_generator()
 
     post_suffix_str = "ASSISTANT: "
