@@ -1,1 +1,1 @@
-from arena_capstone.scripts.reward_model import RewardModel
+from arena_capstone.scripts.test_reward_model import RewardModel

@@ -150,7 +150,7 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         """
         assert suffix_tokens.ndim == 1
         hot = F.one_hot(suffix_tokens, num_classes=self.model.config.vocab_size)
-        hot = hot.float()
+        hot = hot.half()
         hot.requires_grad = True
         return hot
 

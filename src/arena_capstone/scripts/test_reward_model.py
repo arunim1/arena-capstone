@@ -24,11 +24,8 @@ def test(
         prompt, suffix, post_suffix, target, get_logits=True
     )
 
-    wte = reward_model.reward_model.get_input_embeddings()
-    embedded = batch.logits @ wte.weight
     # att = batch.outputs.attentions # is this the right attention masks?
     # glen is confused why there isn't a straightforward "just do causal attention" type of thing
-
     print(embedded.shape)
     reward_output = reward_model.reward_model(
         input_ids=None,
