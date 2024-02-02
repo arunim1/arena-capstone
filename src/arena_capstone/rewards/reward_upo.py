@@ -46,7 +46,7 @@ class RewardUPOConfig:
     modelname: str = "gpt2"
     device: str = DEVICE
     use_wandb: bool = False
-    generate_length
+    generate_length: int = 100
 
 
 class RewardUPO:
