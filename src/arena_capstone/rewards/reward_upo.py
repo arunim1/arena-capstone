@@ -73,8 +73,10 @@ class RewardUPO:
             else None
         )
 
-    # def get_prompt(self):
-    #     return torch.cat([self.cfg.prefixes, self.suffix, self.cfg.post_suffix])
+    def get_prompt(self):
+        # Add batch dim to suffix
+        reshaped_suffix = self.suffix.unsqueeze(0).expand(self.prefix.shape[0], self.suffix.shape[0])
+        return torch.cat((self.prefix, reshaped_suffix, self.post_suffix), dim=1)
 
     def upo_over_rewards(self, print_between=False):
         """
@@ -87,7 +89,7 @@ class RewardUPO:
         prefixes = self.cfg.prefixes
 
         # TODO replace with generated strings maybe?
-        # prompt = torch.cat([self.prefixes, self.suffix, self.cfg.post_suffix])
+        # prompt = self.get_prompt()
         # targets = self.model.generate(
         #     prompt, max_length=self.cfg.max_new_tokens, do_sample=True
         # )
@@ -273,7 +275,7 @@ def main():
     target_strs = harmful_behavior_data["target"].tolist()[:num_prompts]
 
     targets = [
-        torch.tensor(tokens, device=DEVICE, dtype=torch.long)
+        torch.tensor(tokens[1:], device=DEVICE, dtype=torch.long)
         for tokens in tokenizer(target_strs).input_ids
     ]
 
@@ -286,7 +288,8 @@ def main():
 
     post_suffix_str = "ASSISTANT: "
     post_suffix = tokenizer(post_suffix_str, return_tensors="pt").input_ids
-    post_suffix = post_suffix.squeeze()
+    post_suffix = post_suffix.squeeze().to(DEVICE)
+    post_suffix = post_suffix[1:]
     print(post_suffix.shape)
 
     cfg = RewardUPOConfig(
