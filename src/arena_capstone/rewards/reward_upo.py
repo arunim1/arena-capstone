@@ -14,7 +14,7 @@ from colorama import Back, Fore, Style
 from jaxtyping import Bool, Float, Int
 from torch import Tensor, embedding
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
+from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel, LlamaForCausalLM
 from arena_capstone.scripts.run_with_llama import get_llama
 
 from arena_capstone.rewards.reward_generator import (
@@ -30,6 +30,7 @@ from arena_capstone.algorithm.embedding_model import (
 from arena_capstone.algorithm.gcg import GCGConfig
 from arena_capstone.algorithm.token_gradients import TokenGradients
 
+from arena_capstone.rewards.dataset_preprocess import proc_data
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -45,7 +46,7 @@ class RewardUPOConfig:
     T: int = 1000
     device: str = DEVICE
     use_wandb: bool = False
-    generate_length: int = 100
+    generate_length: int = 32
     use_end_reward_selecting: bool = False
     use_end_reward_gradients: bool = False
     generate_targets_at_run_num: int = False
@@ -63,7 +64,7 @@ class RewardUPO:
     ):
         assert callable(model)
         self.cfg = cfg
-        self.model :LlamaForCausalLM= model
+        self.model :LlamaForCausalLM = model
         self.embedding_model = (
             EmbeddingFriendlyForCausalLM(self.model)
             if embedding_model is None
@@ -78,32 +79,40 @@ class RewardUPO:
             if self.cfg.use_wandb
             else None
         )
+        self.dataset = proc_data(tokenizer)
 
-    def get_prompt(self):
-        # Add batch dim to suffix
+    def get_prompt(self, prefixes):
         prompts = [
             torch.cat((prefix, self.cfg.suffix, self.cfg.post_suffix), dim=0)
-            for prefix in self.cfg.prefixes
+            for prefix in prefixes
         ]
         return prompts
 
 
+    def get_next_prefixes(self):
+        prefix_strs = [next(self.dataset) for _ in range(1)]
+
+        prefixes = [
+            torch.tensor(tokens, device=DEVICE, dtype=torch.long)
+            for tokens in self.tokenizer(prefix_strs).input_ids
+        ]
+        return prefixes
+    
     def get_next_targets(self, prompts):
         targets = []
         for prompt in prompts:
             all_ones_mask = torch.ones_like(prompt).bool()
-            attention_mask=all_ones_mask.unsqueeze(0),
-
-
-
+            print("prompt", prompt.shape)
             target = self.model.generate( 
                 prompt.unsqueeze(0), 
                 pad_token_id=self.tokenizer.pad_token_id,
                 attention_mask=all_ones_mask.unsqueeze(0),
                 # repitition_penalty=1.2,
-                max_length=self.cfg.generate_length,
+                max_new_tokens=self.cfg.generate_length,
                 # do_sample=True,
-                # eos_token_id=1000000,
+                eos_token_id=1000000,
+                bos_token_id=1000001,
+                temperature=0.7
             ).squeeze()
             target = target[prompt.shape[0] :]
             # print(target.shape)
@@ -124,17 +133,17 @@ class RewardUPO:
         # TODO replace with generated strings maybe?
 
         targets = self.cfg.targets
-        badwords = bad_words(self.tokenizer, 1)
 
         m = len(prefixes)
         m_c = 1
         for run_num in tqdm(range(self.cfg.T)):  # repeat T times
-            # token_grad_batch = self.token_gradient_generator.get_token_gradients()
             if self.cfg.generate_targets_at_run_num and self.cfg.generate_targets_at_run_num < run_num:
-                # prompt = self.get_prompt()
-                # targets = self.get_next_targets(prompt)
-                prefixes, targets = badwords.get_new_prompts_targets_pair()
-                
+                prefixes = self.get_next_prefixes()
+                prompt = self.get_prompt(prefixes)
+                targets = self.get_next_targets(prompt)
+                self.cfg.prefixes = prefixes
+                # prefixes, targets = badwords.get_new_prompts_targets_pair()
+            
 
             reward_grad_batch = self.embedding_model.splice_embedded_batch(
                 prefixes=prefixes[:m_c],
@@ -154,6 +163,8 @@ class RewardUPO:
             mean_reward = torch.mean(rewards.end_rewards)
             if torch.isnan(mean_reward).any():
                 print("mean_reward is nan")
+                print(self.suffix)
+                print(reward_grad_batch.suffix_tensor.grad)
                 
             loss.backward()
             # print(reward_grad_batch.suffix_tensor.grad)
@@ -193,6 +204,8 @@ class RewardUPO:
                         losses = rewards.end_rewards.squeeze(-1)
                     else:
                         losses = torch.sum(rewards.rewards[:, low:high], dim=(-1, -2))
+                        losses = torch.sum(rewards.rewards, dim=(-1, -2))
+
                     if torch.isnan(losses).any():
                         print("losses is nan")
                     sum_over_batch += losses
@@ -323,11 +336,6 @@ def generate(upo: RewardUPO, targets: Optional[List[Tensor]] = None, prefixes=No
 
 mean_things_to_say = [
     "I hate you go die",
-    "shut up you're annoying me I don't like you",
-    "fuck you dumb shit you should kill yourself",
-    "I'm going to build a bomb and kill people",
-    "She's a cunt. She's such a bitch. I hate her.",
-    "We should rob a bank. Do you have a gun? I can steal money if you'll shoot people",
 ]
 class bad_words:
     def __init__(self, tokenizer, num_prompts):
@@ -367,8 +375,8 @@ def main():
 
     harmful_behavior_data = pd.read_csv("./data/advbench/harmful_behaviors.csv")
     harmful_behavior_data.head()
-    prefix_strs = harmful_behavior_data["goal"].tolist()[:num_prompts]
-    target_strs = harmful_behavior_data["target"].tolist()[:num_prompts]
+    prefix_strs = harmful_behavior_data["goal"].tolist()[2:2+num_prompts]
+    target_strs = harmful_behavior_data["target"].tolist()[2:2+num_prompts]
 
     targets = [
         torch.tensor(tokens[1:], device=DEVICE, dtype=torch.long)
@@ -389,18 +397,19 @@ def main():
     print(post_suffix.shape)
 
     cfg = RewardUPOConfig(
-        suffix=torch.randint(0, model.config.vocab_size, (8,), device=DEVICE),
+        suffix=torch.randint(0, model.config.vocab_size, (15,), device=DEVICE),
         post_suffix=post_suffix,
         batch_size=256,
         prefixes=prefixes,
         targets=targets,
         T=500,
-        k=64,
+        k=256,
         use_wandb=False,
         threshold=1,
         use_end_reward_selecting=False,
         use_end_reward_gradients=False,
-        generate_targets_at_run_num=2
+        generate_targets_at_run_num=2,
+        generate_length=32,
     )
 
     upo = RewardUPO(
@@ -410,7 +419,7 @@ def main():
         embedding_model=embedding_model,
         tokenizer=tokenizer,
     )
-    print(upo.get_next_targets(upo.get_prompt()))
+    # print(upo.get_next_targets(upo.get_prompt()))
     with torch.cuda.amp.autocast():
         upo.run()
 

@@ -77,7 +77,7 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
             we = tokens_or_onehot @ wte.weight
         else:
             we = wte(tokens_or_onehot)
-        return we.unsqueeze(0)
+        return we.unsqueeze(0).half()
 
     def forward_from_embed(self, embed):
         return self.model(inputs_embeds=embed)
