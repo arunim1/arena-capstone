@@ -138,9 +138,6 @@ class RewardGenerator(RewardModel):
 
     def logit_rewards_from_embedded_batch(
         self,
-        prefixes: List[Int[Tensor, "prefix_len"]],
-        suffix_tokens: Int[Tensor, "suffix_len"],
-        post_suffix_tokens: Int[Tensor, "post_suffix_len"],
         batch: EmbeddedBatch,
     ):
         assert batch.logits is not None

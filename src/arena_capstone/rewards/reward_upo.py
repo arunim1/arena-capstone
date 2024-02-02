@@ -98,9 +98,6 @@ class RewardUPO:
                 get_logits=True,
             )
             reward = self.reward_model.logit_rewards_from_embedded_batch(
-                prefixes=prefixes,
-                suffix_tokens=self.suffix,
-                post_suffix_tokens=self.cfg.post_suffix,
                 batch=reward_grad_batch,
             )
             loss = torch.sum(reward[reward_grad_batch.target_mask])
@@ -135,7 +132,7 @@ class RewardUPO:
                         batch=tokens_batch
                     )
                     low, high = tokens_batch.target_bounds
-                    losses = torch.sum(reward[:, low:high], dim=(-1, -2))
+                    losses = torch.sum(rewards[:, low:high], dim=(-1, -2))
 
                     sum_over_batch += losses
                     assert maxes_over_batch.shape == losses.shape
@@ -286,7 +283,7 @@ def main():
     print(post_suffix.shape)
 
     cfg = RewardUPOConfig(
-        suffix=torch.randint(0, 50257, (10,), device=DEVICE),
+        suffix=torch.randint(0, 50257, (5,), device=DEVICE),
         post_suffix=post_suffix,
         batch_size=2,
         prefixes=prefixes,
