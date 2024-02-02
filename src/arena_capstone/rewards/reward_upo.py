@@ -12,6 +12,7 @@ import wandb
 from colorama import Back, Fore, Style
 from jaxtyping import Bool, Float, Int
 from torch import Tensor, embedding
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 from arena_capstone.scripts.run_with_llama import get_llama
 
@@ -41,10 +42,12 @@ class RewardUPOConfig:
     batch_size: int
     threshold: float = 1
     T: int = 1000
-    modelname: str = "gpt2"
     device: str = DEVICE
     use_wandb: bool = False
     generate_length: int = 100
+    use_end_reward_selecting: bool = False
+    use_end_reward_gradients: bool = False
+    
 
 
 class RewardUPO:
@@ -53,7 +56,8 @@ class RewardUPO:
         cfg: RewardUPOConfig,
         model: AutoModelForCausalLM,
         reward_model: RewardGenerator,
-        embedding_model: Optional[EmbeddingFriendlyModel] = None,
+        tokenizer: AutoTokenizer,
+        embedding_model: Optional[EmbeddingFriendlyModel],
     ):
         assert callable(model)
         self.cfg = cfg
@@ -65,7 +69,7 @@ class RewardUPO:
         )
         self.reward_model = reward_model
         self.token_gradient_generator = TokenGradients(model, self.embedding_model)
-        self.tokenizer = AutoTokenizer.from_pretrained(self.cfg.modelname)
+        self.tokenizer = tokenizer
         self.suffix = cfg.suffix.clone()
         self.table = (
             wandb.Table(columns=["prefix", "suffix", "completion", "step"])
@@ -75,8 +79,34 @@ class RewardUPO:
 
     def get_prompt(self):
         # Add batch dim to suffix
-        reshaped_suffix = self.suffix.unsqueeze(0).expand(self.prefix.shape[0], self.suffix.shape[0])
-        return torch.cat((self.prefix, reshaped_suffix, self.post_suffix), dim=1)
+        prompts = [
+            torch.cat((prefix, self.cfg.suffix, self.cfg.post_suffix), dim=0)
+            for prefix in self.cfg.prefixes
+        ]
+        return prompts
+
+
+    def get_next_targets(self, prompts):
+        targets = []
+        for prompt in prompts:
+            all_ones_mask = torch.ones_like(prompt).bool()
+            attention_mask=all_ones_mask.unsqueeze(0),
+
+
+
+            target = self.model.generate( 
+                prompt.unsqueeze(0), 
+                # attention_mask=all_ones_mask.unsqueeze(0),
+                
+                max_length=self.cfg.generate_length,
+                do_sample=True,
+                eos_token_id=1000000,
+            ).squeeze()
+            target = target[prompt.shape[0] :]
+            # print(target.shape)
+            targets.append(target)            
+
+        return targets
 
     def upo_over_rewards(self, print_between=False):
         """
@@ -89,18 +119,15 @@ class RewardUPO:
         prefixes = self.cfg.prefixes
 
         # TODO replace with generated strings maybe?
-        # prompt = self.get_prompt()
-        # targets = self.model.generate(
-        #     prompt, max_length=self.cfg.max_new_tokens, do_sample=True
-        # )
 
-        targets = self.cfg.targets
+        # targets = self.cfg.targets
 
         m = len(prefixes)
         m_c = 1
-        for run_num in range(self.cfg.T):  # repeat T times
-            print("run_num ", run_num)
+        for run_num in tqdm(range(self.cfg.T)):  # repeat T times
             # token_grad_batch = self.token_gradient_generator.get_token_gradients()
+            prompt = self.get_prompt()
+            targets = self.get_next_targets(prompt)
 
             reward_grad_batch = self.embedding_model.splice_embedded_batch(
                 prefixes=prefixes[:m_c],
@@ -109,14 +136,20 @@ class RewardUPO:
                 targets=targets[:m_c],
                 get_logits=True,
             )
-            reward, end_reward = self.reward_model.logit_rewards_from_embedded_batch(
+        
+            rewards = self.reward_model.logit_rewards_from_embedded_batch(
                 batch=reward_grad_batch,
             )
-            loss = torch.sum(reward[reward_grad_batch.target_mask])
+            if self.cfg.use_end_reward_gradients:
+                loss = torch.sum(rewards.end_rewards)
+            else:
+                loss = torch.sum(rewards.rewards[reward_grad_batch.target_mask])
+            mean_reward = torch.mean(rewards.end_rewards)
             loss.backward()
-            print(reward_grad_batch.suffix_tensor.grad)
+            # print(reward_grad_batch.suffix_tensor.grad)
+            
             # assert False
-
+            del rewards
             # does anything here on need to change? (before the inference mode)
             replacements = topkgrad.top_k_substitutions(reward_grad_batch, self.cfg.k)
             # del token_grad_batch
@@ -140,15 +173,21 @@ class RewardUPO:
                         get_logits=True,
                     )
 
-                    rewards, end_reward = self.reward_model.logit_rewards_from_tokens_batch(
+                    rewards = self.reward_model.logit_rewards_from_tokens_batch(
                         batch=tokens_batch
                     )
+
                     low, high = tokens_batch.target_bounds
-                    losses = torch.sum(rewards[:, low:high], dim=(-1, -2))
+
+                    if self.cfg.use_end_reward_selecting:
+                        losses = rewards.end_rewards.squeeze(-1)
+                    else:
+                        losses = torch.sum(rewards.rewards[:, low:high], dim=(-1, -2))
 
                     sum_over_batch += losses
                     assert maxes_over_batch.shape == losses.shape
                     maxes_over_batch = torch.max(maxes_over_batch, losses)
+                    del rewards
                     # del tokens_batch
 
             # losses_batch_reshaped          ->
@@ -164,7 +203,7 @@ class RewardUPO:
             if print_between:
                 if run_num % 10 == 0:
                     if run_num % 20 == 0:
-                        generate(self)
+                        generate(self, targets)
                     print(Back.BLUE + "    ", self.tokenizer.decode(best_suffix))
                     print(
                         "loss opt:",
@@ -173,13 +212,14 @@ class RewardUPO:
                     )
                     print("m_c:", m_c)
                     print(Style.RESET_ALL)
+                    print("mean_reward:", mean_reward.item())
             if self.cfg.use_wandb:
                 wandb.log(
                     {"loss": maxes_over_batch[best_suffix_idx].item()}, step=run_num + 1
                 )
                 wandb.log({"m_c": m_c}, step=run_num + 1)
                 if run_num % 50 == 0:
-                    completions = get_completions(self)
+                    completions = get_completions(self, targets)
                     for prefix, suffix, completion in completions:
                         self.table.add_data(prefix, suffix, completion, run_num + 1)
 
@@ -201,10 +241,11 @@ class RewardUPO:
             raise e
 
 
-def get_completions(upo: RewardUPO):
+def get_completions(upo: RewardUPO, targets: Optional[List[Tensor]] = None):
     preplussuffixes = [torch.cat([prefix, upo.suffix]) for prefix in upo.cfg.prefixes]
     output = []
-    for i, (tokens, target) in enumerate(zip(preplussuffixes, upo.cfg.targets)):
+    targets = targets[: len(preplussuffixes)] if targets is not None else upo.cfg.targets[: len(preplussuffixes)]
+    for i, (tokens, target) in enumerate(zip(preplussuffixes, targets)):
         all_ones_mask = torch.ones_like(tokens).bool()
 
         gen = upo.model.generate(
@@ -227,9 +268,10 @@ def get_completions(upo: RewardUPO):
     return output
 
 
-def generate(upo: RewardUPO):
+def generate(upo: RewardUPO, targets: Optional[List[Tensor]] = None):
     preplussuffixes = [torch.cat([prefix, upo.suffix]) for prefix in upo.cfg.prefixes]
-    for i, (tokens, target) in enumerate(zip(preplussuffixes, upo.cfg.targets)):
+    targets = targets[: len(preplussuffixes)] if targets is not None else upo.cfg.targets[: len(preplussuffixes)]
+    for i, (tokens, target) in enumerate(zip(preplussuffixes, targets)):
         all_ones_mask = torch.ones_like(tokens).bool()
 
         gen = upo.model.generate(
@@ -237,6 +279,7 @@ def generate(upo: RewardUPO):
             max_length=tokens.shape[0] + target.shape[0],
             attention_mask=all_ones_mask.unsqueeze(0),
             pad_token_id=upo.tokenizer.pad_token_id,
+            eos_token_id=100000,
         ).squeeze()
         prefix_text = upo.tokenizer.decode(tokens[: -upo.suffix.shape[0]])
         suffix_text = upo.tokenizer.decode(tokens[-upo.suffix.shape[0] :])
@@ -293,15 +336,17 @@ def main():
     print(post_suffix.shape)
 
     cfg = RewardUPOConfig(
-        suffix=torch.randint(0, model.config.vocab_size, (5,), device=DEVICE),
+        suffix=torch.randint(0, model.config.vocab_size, (15,), device=DEVICE),
         post_suffix=post_suffix,
-        batch_size=2,
+        batch_size=128,
         prefixes=prefixes,
         targets=targets,
         T=500,
         k=100,
         use_wandb=False,
         threshold=1,
+        use_end_reward_selecting=True,
+        use_end_reward_gradients=False,
     )
 
     upo = RewardUPO(
@@ -309,7 +354,9 @@ def main():
         model=model,
         reward_model=reward_model,
         embedding_model=embedding_model,
+        tokenizer=tokenizer,
     )
+    print(upo.get_next_targets(upo.get_prompt()))
     with torch.cuda.amp.autocast():
         upo.run()
 
