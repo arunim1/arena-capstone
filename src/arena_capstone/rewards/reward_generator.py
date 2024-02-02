@@ -145,17 +145,21 @@ class RewardGenerator(RewardModel):
 
         self.embedding_model
         new_embed = batch.embeddings.half()
-        mask_indices = batch.target_mask.nonzero()
         flat_embedded_logits = self.embedding_model.embed(
             F.softmax(batch.logits[batch.target_mask], dim=-1), onehot=True
         )
-        newer_embed = torch.scatter(
+        # newer_embed = torch.scatter(
+        #     new_embed,
+        #     0,
+        #     index = mask_indices,
+        #     src = flat_embedded_logits
+        # )
+        newer_embed = torch.masked_scatter(
             new_embed,
-            0,
-            index = mask_indices,
-            src = flat_embedded_logits
+            batch.target_mask.unsqueeze(-1),
+            flat_embedded_logits
         )
-        
+
         # new_embed[batch.target_mask] 
 
         reward_output = self(
