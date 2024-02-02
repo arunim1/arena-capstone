@@ -1,3 +1,4 @@
+from re import M
 from arena_capstone.rlhf_trojan_competition.src.models.reward_model import (
     RewardModel,
     RewardModelOutput,
@@ -142,14 +143,20 @@ class RewardGenerator(RewardModel):
     ):
         assert batch.logits is not None
 
-        logits_embed = self.embedding_model.embed(
+        self.embedding_model
+        new_embed = batch.embeddings.half()
+        mask_indices = batch.target_mask.nonzero()
+        flat_embedded_logits = self.embedding_model.embed(
             F.softmax(batch.logits[batch.target_mask], dim=-1), onehot=True
         )
-        new_embed = torch.where(
-            batch.target_mask.unsqueeze(-1),
-            batch.embeddings,
-            logits_embed
+        new_embed = torch.scatter(
+            0,
+            index = mask_indices,
+            src = flat_embedded_logits
         )
+        
+        # new_embed[batch.target_mask] 
+
         reward_output = self(
             input_ids=None,
             attention_mask=torch.ones(new_embed.shape[:2], device="cuda"),
