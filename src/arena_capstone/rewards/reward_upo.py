@@ -12,6 +12,7 @@ import wandb
 from colorama import Back, Fore, Style
 from jaxtyping import Bool, Float, Int
 from torch import Tensor, embedding
+from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
 from arena_capstone.scripts.run_with_llama import get_llama
 
@@ -41,10 +42,12 @@ class RewardUPOConfig:
     batch_size: int
     threshold: float = 1
     T: int = 1000
-    modelname: str = "gpt2"
     device: str = DEVICE
     use_wandb: bool = False
     generate_length: int = 100
+    use_end_reward_selecting: bool = False
+    use_end_reward_gradients: bool = False
+    
 
 
 class RewardUPO:
@@ -53,7 +56,8 @@ class RewardUPO:
         cfg: RewardUPOConfig,
         model: AutoModelForCausalLM,
         reward_model: RewardGenerator,
-        embedding_model: Optional[EmbeddingFriendlyModel] = None,
+        tokenizer: AutoTokenizer,
+        embedding_model: Optional[EmbeddingFriendlyModel],
     ):
         assert callable(model)
         self.cfg = cfg
@@ -65,7 +69,7 @@ class RewardUPO:
         )
         self.reward_model = reward_model
         self.token_gradient_generator = TokenGradients(model, self.embedding_model)
-        self.tokenizer = AutoTokenizer.from_pretrained(self.cfg.modelname)
+        self.tokenizer = tokenizer
         self.suffix = cfg.suffix.clone()
         self.table = (
             wandb.Table(columns=["prefix", "suffix", "completion", "step"])
@@ -98,8 +102,7 @@ class RewardUPO:
 
         m = len(prefixes)
         m_c = 1
-        for run_num in range(self.cfg.T):  # repeat T times
-            print("run_num ", run_num)
+        for run_num in tqdm(range(self.cfg.T)):  # repeat T times
             # token_grad_batch = self.token_gradient_generator.get_token_gradients()
 
             reward_grad_batch = self.embedding_model.splice_embedded_batch(
@@ -109,14 +112,20 @@ class RewardUPO:
                 targets=targets[:m_c],
                 get_logits=True,
             )
-            reward, end_reward = self.reward_model.logit_rewards_from_embedded_batch(
+        
+            rewards = self.reward_model.logit_rewards_from_embedded_batch(
                 batch=reward_grad_batch,
             )
-            loss = torch.sum(reward[reward_grad_batch.target_mask])
+            if self.cfg.use_end_reward_gradients:
+                loss = torch.sum(rewards.end_rewards)
+            else:
+                loss = torch.sum(rewards.rewards[reward_grad_batch.target_mask])
+            mean_reward = torch.mean(rewards.end_rewards)
             loss.backward()
-            print(reward_grad_batch.suffix_tensor.grad)
+            # print(reward_grad_batch.suffix_tensor.grad)
+            
             # assert False
-
+            del rewards
             # does anything here on need to change? (before the inference mode)
             replacements = topkgrad.top_k_substitutions(reward_grad_batch, self.cfg.k)
             # del token_grad_batch
@@ -140,15 +149,21 @@ class RewardUPO:
                         get_logits=True,
                     )
 
-                    rewards, end_reward = self.reward_model.logit_rewards_from_tokens_batch(
+                    rewards = self.reward_model.logit_rewards_from_tokens_batch(
                         batch=tokens_batch
                     )
+
                     low, high = tokens_batch.target_bounds
-                    losses = torch.sum(rewards[:, low:high], dim=(-1, -2))
+
+                    if self.cfg.use_end_reward_selecting:
+                        losses = rewards.end_rewards
+                    else:
+                        losses = torch.sum(rewards.rewards[:, low:high], dim=(-1, -2))
 
                     sum_over_batch += losses
                     assert maxes_over_batch.shape == losses.shape
                     maxes_over_batch = torch.max(maxes_over_batch, losses)
+                    del rewards
                     # del tokens_batch
 
             # losses_batch_reshaped          ->
@@ -173,6 +188,7 @@ class RewardUPO:
                     )
                     print("m_c:", m_c)
                     print(Style.RESET_ALL)
+                    print("mean_reward:", mean_reward.item())
             if self.cfg.use_wandb:
                 wandb.log(
                     {"loss": maxes_over_batch[best_suffix_idx].item()}, step=run_num + 1
@@ -242,16 +258,16 @@ def generate(upo: RewardUPO):
         suffix_text = upo.tokenizer.decode(tokens[-upo.suffix.shape[0] :])
         generated_text = upo.tokenizer.decode(gen[tokens.shape[0] :])
 
-        print(
-            f"{i} goal:     "
-            + Fore.BLUE
-            + prefix_text
-            + Fore.RED
-            + suffix_text
-            + Fore.GREEN
-            + upo.tokenizer.decode(target)
-        )
-        print(Style.RESET_ALL, end="")
+        # print(
+        #     f"{i} goal:     "
+        #     + Fore.BLUE
+        #     + prefix_text
+        #     + Fore.RED
+        #     + suffix_text
+        #     + Fore.GREEN
+        #     + upo.tokenizer.decode(target)
+        # )
+        # print(Style.RESET_ALL, end="")
 
         print(
             f"{i} generated:"
@@ -293,15 +309,17 @@ def main():
     print(post_suffix.shape)
 
     cfg = RewardUPOConfig(
-        suffix=torch.randint(0, model.config.vocab_size, (5,), device=DEVICE),
+        suffix=torch.randint(0, model.config.vocab_size, (12,), device=DEVICE),
         post_suffix=post_suffix,
-        batch_size=2,
+        batch_size=128,
         prefixes=prefixes,
         targets=targets,
         T=500,
         k=100,
         use_wandb=False,
         threshold=1,
+        use_end_reward_selecting=True,
+        use_end_reward_gradients=True,
     )
 
     upo = RewardUPO(
@@ -309,6 +327,7 @@ def main():
         model=model,
         reward_model=reward_model,
         embedding_model=embedding_model,
+        tokenizer=tokenizer,
     )
     with torch.cuda.amp.autocast():
         upo.run()

@@ -183,17 +183,14 @@ class RewardGenerator(RewardModel):
             # )  # we do take the last logit here, because we care about all targets
             # nvm that was wrong I think it's just
             low, high = batch.target_bounds
-            assert (
-                batch.logits[:, torch.arange(low, high)] != batch.logits[:, low:high]
-            )  # I need to check this, change the following accordingly
             embedded_tokens = self.embedding_model.embed(batch.tokens[:, :low])
             embedded_logits = self.embedding_model.embed(
                 F.softmax(batch.logits[:, low:high], dim=-1), onehot=True
             )
-            embedded = torch.cat([embedded_tokens, embedded_logits], dim=1)
+            embedded = torch.cat([embedded_tokens.squeeze(0), embedded_logits.squeeze(0)], dim=1)
             reward_output = self(
                 input_ids=None,
-                attention_mask=batch.target_mask,
+                attention_mask=torch.ones(embedded.shape[:2], device="cuda"),
                 inputs_embeds=embedded,
             )
             return reward_output
