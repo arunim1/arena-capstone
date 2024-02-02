@@ -149,7 +149,8 @@ class RewardGenerator(RewardModel):
         flat_embedded_logits = self.embedding_model.embed(
             F.softmax(batch.logits[batch.target_mask], dim=-1), onehot=True
         )
-        new_embed = torch.scatter(
+        newer_embed = torch.scatter(
+            new_embed,
             0,
             index = mask_indices,
             src = flat_embedded_logits
@@ -160,7 +161,7 @@ class RewardGenerator(RewardModel):
         reward_output = self(
             input_ids=None,
             attention_mask=torch.ones(new_embed.shape[:2], device="cuda"),
-            inputs_embeds=new_embed,
+            inputs_embeds=newer_embed,
         )
         return reward_output
 
