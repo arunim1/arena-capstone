@@ -1,2 +1,1 @@
-*.ipynb -linguist-detectable
-*/rlhf_trojan_competition/* linguist-vendored
+*/rlhf_trojan_competition/* -linguist-detectible
