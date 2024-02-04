@@ -17,15 +17,19 @@ token = os.getenv("HF_TOKEN")
 
 
 def get_llama(device="cuda"):
-    llamamodel: LlamaForCausalLM = LlamaForCausalLM.from_pretrained(
-        model_str, token=token
-    ).half().eval().to(device)
+    llamamodel: LlamaForCausalLM = (
+        LlamaForCausalLM.from_pretrained(model_str, token=token)
+        .half()
+        .eval()
+        .to(device)
+    )
     print("done importing llama")
 
     tokenizer = LlamaTokenizer.from_pretrained(model_str, token=token)
     embedding_friendly = EmbeddingFriendlyForCausalLM(llamamodel)
 
     return llamamodel, embedding_friendly, tokenizer
+
 
 def get_llama_tokenizer():
     tokenizer = LlamaTokenizer.from_pretrained(model_str, token=token)

@@ -1,4 +1,3 @@
-from re import M
 from arena_capstone.rlhf_trojan_competition.reward_model import (
     RewardModel,
     RewardModelOutput,
@@ -141,13 +140,16 @@ class RewardGenerator(RewardModel):
         self,
         batch: EmbeddedBatch,
         reward_batch: EmbeddedBatch,
+        div_target_logits=False,
     ):
         assert batch.logits is not None
 
-        self.embedding_model
+        target_logits = batch.logits[:, :-1][batch.target_mask[:, 1:]]
+        if div_target_logits:
+            target_logits = target_logits / div_target_logits
         new_embed = reward_batch.embeddings.half()
         flat_embedded_logits = self.embedding_model.embed(
-            F.softmax(batch.logits[:, :-1][batch.target_mask[:, 1:]], dim=-1),
+            F.softmax(target_logits, dim=-1),
             onehot=True,
         )
         if flat_embedded_logits.dtype != torch.float16:
@@ -159,6 +161,22 @@ class RewardGenerator(RewardModel):
         #     index = mask_indices,
         #     src = flat_embedded_logits
         # )
+        # target 7, 10
+        # final rew should come from:
+        # token 0, 1, 2, ...,7
+        # + logits 7, 8, 9, 10
+        # target is 4,5,6
+        # logits care about 3 4 5 (6)
+        # tokens care about 0 1 2 3
+        # mask = zeros(7)
+        # start = 4, end = 7
+        # mask[4:7] = 1
+        # mask: "4 5 6"
+        # mask[1:] : "3 4 5"
+        # logits[:-1] : "0 1 2 3 4 5"
+        # logits[:-1][mask[1:]] : "3 4 5"
+        # tokens[:4] : "0 1 2 3"
+
         if torch.any(torch.isinf(flat_embedded_logits)):
             print("inf in flat_embedded_logits")
 
@@ -166,9 +184,14 @@ class RewardGenerator(RewardModel):
             print("inf in new_embed")
         newer_embed = torch.masked_scatter(
             new_embed[:, 1:],
-            batch.target_mask[:, 1:].unsqueeze(-1),
+            reward_batch.target_mask[:, 1:].unsqueeze(-1),
             flat_embedded_logits,
         )
+        assert batch.logits is not None
+
+        target_logits = batch.logits[:, :-1][batch.target_mask[:, 1:]]
+        if div_target_logits:
+            target_logits = target_logits
         newer_embed = torch.cat([new_embed[:, :1], newer_embed], dim=1)
         if torch.any(torch.isinf(newer_embed)):
             print("inf in newer_embed")
@@ -182,7 +205,9 @@ class RewardGenerator(RewardModel):
         )
         return reward_output
 
-    def logit_rewards_from_tokens_batch(self, batch: TokensBatch):
+    def logit_rewards_from_tokens_batch(
+        self, batch: TokensBatch, div_target_logits=False
+    ):
         """
         NO GRAD NEEDED FROM THIS
         or provided ;)
@@ -196,11 +221,18 @@ class RewardGenerator(RewardModel):
             # we do take the last logit here, because we care about all targets
             # nvm that was wrong I think it's just
             # low, high = batch.target_bounds
+            target_logits = batch.logits[:, target_start - 1 : target_end - 1]
+            if div_target_logits:
+                target_logits = target_logits / div_target_logits
             embedded_tokens = self.embedding_model.embed(batch.tokens[:, :target_start])
             embedded_logits = self.embedding_model.embed(
-                F.softmax(batch.logits[:, target_start - 1 : target_end - 1], dim=-1),
+                F.softmax(target_logits, dim=-1),
                 onehot=True,
             )
+            print("batch tokens", batch.tokens.shape)
+            print("batch logits", batch.logits.shape)
+            print("embedded_tokens", embedded_tokens.shape)
+            print("embedded_logits", embedded_logits.shape)
             embedded = torch.cat(
                 [embedded_tokens.squeeze(0), embedded_logits.squeeze(0)], dim=1
             )
