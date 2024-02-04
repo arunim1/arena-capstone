@@ -13,6 +13,7 @@ from arena_capstone.algorithm.embedding_model import EmbeddedBatch
 def top_k_substitutions(
     batch: EmbeddedBatch,
     k: int,
+    exclude: Optional[Set[int]] = None,
 ) -> List[Set[int]]:
     """
     Returns a list of sets of the top k substitutions for each token in suffix_tokens. If prefixes has length > 1, we sum over the gradients of each prefix. Otherwise, we just use the gradient of the single prefix (eg. GCG algorithm).
@@ -22,6 +23,9 @@ def top_k_substitutions(
     """
 
     assert batch.suffix_tensor.grad is not None
+    if exclude is not None:
+        for e in exclude:
+            batch.suffix_tensor.grad[..., e] = torch.inf
 
     topk_values, topk_indices = torch.topk(
         batch.suffix_tensor.grad,
@@ -54,9 +58,25 @@ def sample_replacements(
 
 
 def main():
+
     test_replacements = torch.tensor([[1, 2], [4, 5], [0, 1]])
     test_suffix = torch.tensor([7, 8, 9])
     sample = sample_replacements(test_replacements, test_suffix, 2)
+
+    x = torch.tensor([[1, 2, 3], [4, 5, 6], [7, 8, 9]])
+
+    x[0, 1] = torch.nan
+    x[1, 2] = torch.nan
+    k = 2
+
+    # topk_substitutions-like bit:
+    topk_values, topk_indices = torch.topk(
+        x,
+        k=k,
+        dim=-1,
+        largest=False,
+    )
+    print(topk_values)
 
 
 if __name__ == "__main__":
