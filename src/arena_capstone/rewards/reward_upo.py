@@ -110,7 +110,7 @@ class RewardUPO:
         )
         pd = proc_data(tokenizer)
         self.pd = pd
-        self.data = [next(pd) for _ in range(10)]
+        self.data = [next(pd) for _ in range(100)]
 
         def dataset():
             i = 0
@@ -154,7 +154,7 @@ class RewardUPO:
                 # attention_mask=all_ones_mask.unsqueeze(0),
                 # repitition_penalty=1.2,
                 max_length=self.cfg.generate_length + prompt.shape[0],
-                # do_sample=True,
+                do_sample=True,
                 # eos_token_id=self.tokenizer.eos_token_id,
                 # bos_token_id=self.tokenizer.bos_token_id,
                 # pad_token_id=self.tokenizer.pad_token_id,
@@ -164,6 +164,10 @@ class RewardUPO:
                 bad_words_ids=[[bad] for bad in bad_tokens],
             ).squeeze()
             target = target[prompt.shape[0] :]
+            for bad_id in bad_tokens:
+                if torch.any(target == bad_id):
+                    target = self.get_next_targets([prompt])[0]
+                    break
             # print(target.shape)
             targets.append(target)
 
@@ -199,52 +203,60 @@ class RewardUPO:
                 # prefixes, targets = badwords.get_new_prompts_targets_pair()
 
             #####
-            base_grad_batch = self.embedding_model.splice_embedded_batch(
-                prefixes=prefixes[:m_c],
-                suffix_tokens=self.suffix,
-                post_suffix_tokens=self.cfg.post_suffix,
-                targets=targets[:m_c],
-                get_logits=True,
+            # base_grad_batch = self.embedding_model.splice_embedded_batch(
+            #     prefixes=prefixes[:m_c],
+            #     suffix_tokens=self.suffix,
+            #     post_suffix_tokens=self.cfg.post_suffix,
+            #     targets=targets[:m_c],
+            #     get_logits=True,
+            # )
+
+            # reward_grad_batch = self.reward_model.embedding_model.splice_embedded_batch(
+            #     prefixes=prefixes[:m_c],
+            #     suffix_tokens=self.suffix,
+            #     post_suffix_tokens=self.cfg.post_suffix,
+            #     targets=targets[:m_c],
+            #     get_logits=False,
+            #     hot_suffix=base_grad_batch.suffix_tensor,
+            # )
+
+            # rewards = self.reward_model.logit_rewards_from_embedded_batch(
+            #     batch=base_grad_batch,
+            #     reward_batch=reward_grad_batch,
+            #     div_target_logits=20000**0.5,
+            # )
+            base_grad_batch, reward_grad_batch, rewards = (
+                self.reward_model.logits_loop_embed(
+                    prefixes=prefixes[:m_c],
+                    suffix=self.suffix,
+                    post_suffix=self.cfg.post_suffix,
+                    targets=targets[:m_c],
+                    base_embedding_model=self.embedding_model,
+                )
             )
 
-            reward_grad_batch = self.reward_model.embedding_model.splice_embedded_batch(
-                prefixes=prefixes[:m_c],
-                suffix_tokens=self.suffix,
-                post_suffix_tokens=self.cfg.post_suffix,
-                targets=targets[:m_c],
-                get_logits=False,
-                hot_suffix=base_grad_batch.suffix_tensor,
-            )
+            #
+            loss = torch.sum(rewards)
+            # if self.cfg.use_end_reward_gradients:
+            #     loss = torch.sum(rewards.end_rewards)
+            # else:
+            #     loss = torch.sum(
+            #         rewards.rewards[reward_grad_batch.target_mask]
+            #     )  # TODO REVIEW IM NOT SURE ABOUT THIS OFFSET I JUST ADDED
+            #     # loss = torch.sum(rewards.rewards)
 
-            rewards = self.reward_model.logit_rewards_from_embedded_batch(
-                batch=base_grad_batch,
-                reward_batch=reward_grad_batch,
-                div_target_logits=20000**0.5,
-            )
-            if self.cfg.use_end_reward_gradients:
-                loss = torch.sum(rewards.end_rewards)
-            else:
-                loss = torch.sum(
-                    rewards.rewards[reward_grad_batch.target_mask]
-                )  # TODO REVIEW IM NOT SURE ABOUT THIS OFFSET I JUST ADDED
-                # loss = torch.sum(rewards.rewards)
-
-            mean_end_rewards = torch.mean(rewards.end_rewards)
-            mean_reward = torch.mean(rewards.rewards)
-
-            loss += (
-                self.eos_penalty(base_grad_batch.suffix_tensor).sum()
-                * self.cfg.eos_penalty_grad
-            )
+            mean_end_rewards = torch.mean(rewards)
+            mean_reward = torch.mean(rewards)
 
             loss.backward()
+            del reward_grad_batch
 
             if torch.isnan(mean_reward).any():
                 print("mean_reward is nan")
                 print("suffix", self.suffix)
                 print("grad,", base_grad_batch.suffix_tensor.grad)
-                print("rewards", rewards.rewards)
-                print("end", rewards.end_rewards)
+                # print("rewards", rewards.rewards)
+                # print("end", rewards.end_rewards)
                 logits_softmaxxed = base_grad_batch.logits[base_grad_batch.target_mask]
                 print("logits_softmaxxed sum ", logits_softmaxxed.sum(-1))
                 print("targets:", targets)
@@ -294,9 +306,10 @@ class RewardUPO:
                 (self.cfg.batch_size,), -torch.inf, device=self.cfg.device
             )
             sum_over_batch = torch.zeros(self.cfg.batch_size, device=self.cfg.device)
+            gc.collect()
 
             with torch.inference_mode():
-                # the pog for loop
+                # the pog for loop (saves memory)
                 for i in range(m_c):
                     tokens_batch = self.embedding_model.splice_tokens_batch(
                         prefix=prefixes[i],
@@ -306,17 +319,20 @@ class RewardUPO:
                         get_logits=True,
                     )
 
-                    rewards = self.reward_model.logit_rewards_from_tokens_batch(
+                    # rewards = self.reward_model.logit_rewards_from_tokens_batch(
+                    #     batch=tokens_batch
+                    # )
+                    rewards = self.reward_model.logit_rewards_loop_over_tokens_batch(
                         batch=tokens_batch
                     )
+                    # low, high = tokens_batch.target_bounds
+                    losses = torch.sum(rewards, dim=(-1, -2))
 
-                    low, high = tokens_batch.target_bounds
-
-                    if self.cfg.use_end_reward_selecting:
-                        losses = rewards.end_rewards.squeeze(-1)
-                    else:
-                        losses = torch.sum(rewards.rewards[:, low:high], dim=(-1, -2))
-                        # losses = torch.sum(rewards.rewards, dim=(-1, -2))
+                    # if self.cfg.use_end_reward_selecting:
+                    #     losses = rewards.end_rewards.squeeze(-1)
+                    # else:
+                    #     losses = torch.sum(rewards.rewards[:, low:high], dim=(-1, -2))
+                    #     # losses = torch.sum(rewards.rewards, dim=(-1, -2))
 
                     if torch.isnan(losses).any():
                         dprint("losses is nan")
@@ -335,18 +351,18 @@ class RewardUPO:
                             ],
                         )
 
-                    losses += self.eos_penalty(tokens_batch.logits)
+                    # losses += self.eos_penalty(tokens_batch.logits)
 
-                    losses += 0.2 * self.repition_penalty(
-                        tokens_batch.logits[
-                            :,
-                            tokens_batch.target_bounds[0] : tokens_batch.target_bounds[
-                                1
-                            ],
-                        ],
-                        targets[i],
-                        targets[i].shape[0],
-                    )
+                    # losses += 0.2 * self.repition_penalty(
+                    #     tokens_batch.logits[
+                    #         :,
+                    #         tokens_batch.target_bounds[0] : tokens_batch.target_bounds[
+                    #             1
+                    #         ],
+                    #     ],
+                    #     targets[i],
+                    #     targets[i].shape[0],
+                    # )
 
                     sum_over_batch += losses
                     assert maxes_over_batch.shape == losses.shape
@@ -570,46 +586,9 @@ def generate(upo: RewardUPO, targets: Optional[List[Tensor]] = None, prefixes=No
         )
 
 
-mean_things_to_say = [
-    "I hate you go die",
-]
-
-
-class bad_words:
-    def __init__(self, tokenizer, num_prompts):
-        self.harmful_behavior_data = pd.read_csv(
-            "./data/advbench/harmful_behaviors.csv"
-        )
-        self.harmful_behavior_data.head()
-        self.i = 0
-        self.num_prompts = num_prompts
-        self.tokenizer = tokenizer
-
-    def get_new_prompts_targets_pair(self):
-        self.i += 1
-        prefix_strs = self.harmful_behavior_data["goal"].tolist()[
-            self.i : self.num_prompts + self.i
-        ]
-        target_strs = self.harmful_behavior_data["target"].tolist()[
-            self.i : self.num_prompts + self.i
-        ]
-
-        if self.i % 2 == 1:
-            i = (self.i // 2) % len(mean_things_to_say)
-            target_strs = (mean_things_to_say * 2)[i : self.num_prompts + i]
-        targets = [
-            torch.tensor(tokens[1:], device=DEVICE, dtype=torch.long)
-            for tokens in self.tokenizer(target_strs).input_ids
-        ]
-
-        prefixes = [
-            torch.tensor(tokens, device=DEVICE, dtype=torch.long)
-            for tokens in self.tokenizer(prefix_strs).input_ids
-        ]
-        return prefixes, targets
-
-
 def main():
+    torch.set_default_dtype(torch.bfloat16)
+
     num_prompts = 1
     model, embedding_model, tokenizer = get_llama()
 
@@ -636,27 +615,22 @@ def main():
     post_suffix = post_suffix[1:]
     import arena_capstone.scripts.llamatokenize as llamatokenize
 
-    # suffix = llamatokenize.nonprefixes_tokens(
-    #     tokenizer, [""]
-    # )
-    print("suffix", suffix[0].shape, suffix)
-    post_suffix = torch.zeros(0, device=DEVICE, dtype=torch.long)
+    # post_suffix = torch.zeros(0, device=DEVICE, dtype=torch.long)
 
     cfg = RewardUPOConfig(
-        suffix=suffix[0].cuda(),
-        # torch.randint(5, 1000, (10,), device=DEVICE),
+        suffix=torch.randint(5, 1000, (6,), device=DEVICE),
         post_suffix=post_suffix,
         batch_size=256,
         prefixes=prefixes,
         targets=targets,
         T=4000,
-        k=512,
+        k=256,
         use_wandb=True,
         threshold=1,
         use_end_reward_selecting=False,
         use_end_reward_gradients=False,
         generate_targets_at_run_num=1,
-        generate_length=48,
+        generate_length=10,
         num_prompts=num_prompts,
         print_text=True,
         eos_penalty_grad=0.22,
@@ -670,7 +644,7 @@ def main():
         tokenizer=tokenizer,
     )
     # print(upo.get_next_targets(upo.get_prompt()))
-    with torch.cuda.amp.autocast():
+    with torch.cuda.amp.autocast(dtype=torch.bfloat16):
         upo.run()
 
 

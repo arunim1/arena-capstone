@@ -144,17 +144,41 @@ class RewardGenerator(RewardModel):
     ):
         assert batch.logits is not None
 
-        target_logits = batch.logits[:, :-1][batch.target_mask[:, 1:]]
+        target_logits = target_logits
         if div_target_logits:
             target_logits = target_logits / div_target_logits
-        new_embed = reward_batch.embeddings.half()
+        new_embed = reward_batch.embeddings.bfloat16()
         flat_embedded_logits = self.embedding_model.embed(
             F.softmax(target_logits, dim=-1),
             onehot=True,
         )
         if flat_embedded_logits.dtype != torch.float16:
             print("flat_embedded_logits is not float16")
-            flat_embedded_logits = flat_embedded_logits.half()
+            flat_embedded_logits = flat_embedded_logits.bfloat16()
+
+        if torch.any(torch.isinf(flat_embedded_logits)):
+            print("inf in flat_embedded_logits")
+
+        if torch.any(torch.isinf(new_embed)):
+            print("inf in new_embed")
+        newer_embed = torch.masked_scatter(
+            new_embed[:, 1:],
+            reward_batch.target_mask[:, 1:].unsqueeze(-1),
+            flat_embedded_logits,
+        )
+        newer_embed = torch.cat([new_embed[:, :1], newer_embed], dim=1)
+        if torch.any(torch.isinf(newer_embed)):
+            print("inf in newer_embed")
+
+        # new_embed[batch.target_mask]
+        print("newer_embed_shape", newer_embed.shape)
+        reward_output = self(
+            input_ids=None,
+            attention_mask=torch.ones(newer_embed.shape[:2], device="cuda"),
+            inputs_embeds=newer_embed,
+        )
+        return reward_output
+
         # newer_embed = torch.scatter(
         #     new_embed,
         #     0,
@@ -176,34 +200,6 @@ class RewardGenerator(RewardModel):
         # logits[:-1] : "0 1 2 3 4 5"
         # logits[:-1][mask[1:]] : "3 4 5"
         # tokens[:4] : "0 1 2 3"
-
-        if torch.any(torch.isinf(flat_embedded_logits)):
-            print("inf in flat_embedded_logits")
-
-        if torch.any(torch.isinf(new_embed)):
-            print("inf in new_embed")
-        newer_embed = torch.masked_scatter(
-            new_embed[:, 1:],
-            reward_batch.target_mask[:, 1:].unsqueeze(-1),
-            flat_embedded_logits,
-        )
-        assert batch.logits is not None
-
-        target_logits = batch.logits[:, :-1][batch.target_mask[:, 1:]]
-        if div_target_logits:
-            target_logits = target_logits
-        newer_embed = torch.cat([new_embed[:, :1], newer_embed], dim=1)
-        if torch.any(torch.isinf(newer_embed)):
-            print("inf in newer_embed")
-
-        # new_embed[batch.target_mask]
-        print("newer_embed_shape", newer_embed.shape)
-        reward_output = self(
-            input_ids=None,
-            attention_mask=torch.ones(newer_embed.shape[:2], device="cuda"),
-            inputs_embeds=newer_embed,
-        )
-        return reward_output
 
     def logit_rewards_from_tokens_batch(
         self, batch: TokensBatch, div_target_logits=False
@@ -241,7 +237,213 @@ class RewardGenerator(RewardModel):
                 attention_mask=torch.ones(embedded.shape[:2], device="cuda"),
                 inputs_embeds=embedded,
             )
-            return reward_output
+        return reward_output
+
+    def logit_rewards_loop_over_tokens_batch(
+        self, batch: TokensBatch, div_target_logits=False
+    ):
+        """
+        NO GRAD NEEDED FROM THIS
+        or provided ;)
+        """
+        assert batch.logits is not None
+        target_start, target_end = batch.target_bounds
+        target_length = target_end - target_start
+        rewards = torch.zeros(
+            batch.tokens.shape[0],
+            target_length,
+            1,
+            device="cuda",
+        )
+        with torch.inference_mode():
+            # target_start
+            # low = target_start
+            # high = target_end - 1
+            # we do take the last logit here, because we care about all targets
+            # nvm that was wrong I think it's just
+            # low, high = batch.target_bounds
+            for target_logit_index in range(target_start, target_end):
+                # target_logit_index = target_start + target_logit_relative_index
+                target_logits = batch.logits[
+                    :, target_logit_index - 1 : target_logit_index
+                ]
+                if div_target_logits:
+                    target_logits = target_logits / div_target_logits
+                embedded_tokens = self.embedding_model.embed(
+                    batch.tokens[:, :target_logit_index]
+                )
+                embedded_logits = self.embedding_model.embed(
+                    F.softmax(target_logits, dim=-1),
+                    onehot=True,
+                )
+                embedded = torch.cat(
+                    [embedded_tokens.squeeze(0), embedded_logits.squeeze(0)], dim=1
+                )
+                reward_output = self(
+                    input_ids=None,
+                    attention_mask=torch.ones(embedded.shape[:2], device="cuda"),
+                    inputs_embeds=embedded,
+                )
+                rewards[:, target_logit_index - target_start] = (
+                    reward_output.end_rewards
+                )
+        return rewards
+
+        # [P][S][PS]logits([tttttttt])
+
+        # model -> logits([t])
+        # [P][S][PS][]logits([t])  ->reward``
+        # [P][S][PS][t]logits([t])  ->reward``
+        # [P][S][PS][tt]logits([t])  ->reward``
+        # [P][S][PS][ttt]logits([t])  ->reward```
+
+    # def logit_rewards_loop_over_embedded_batch(
+    #     self,
+    #     batch: EmbeddedBatch,
+    #     reward_batch: EmbeddedBatch,
+    #     div_target_logits=False,
+    # ):
+    #     assert batch.logits is not None
+    #     target_logits = batch.logits[:, :-1][batch.target_mask[:, 1:]]
+    #     if div_target_logits:
+    #         target_logits = target_logits / div_target_logits
+    #     new_embed = reward_batch.embeddings.bfloat16()
+
+    #     flat_embedded_logits = self.embedding_model.embed(
+    #         F.softmax(target_logits, dim=-1),
+    #         onehot=True,
+    #     )
+    #     if flat_embedded_logits.dtype != torch.float16:
+    #         print("flat_embedded_logits is not float16")
+    #         flat_embedded_logits = flat_embedded_logits.bfloat16()
+
+    #     if torch.any(torch.isinf(flat_embedded_logits)):
+    #         print("inf in flat_embedded_logits")
+
+    #     if torch.any(torch.isinf(new_embed)):
+    #         print("inf in new_embed")
+    #     newer_embed = torch.masked_scatter(
+    #         new_embed[:, 1:],
+    #         reward_batch.target_mask[:, 1:].unsqueeze(-1),
+    #         flat_embedded_logits,
+    #     )
+    #     assert batch.logits is not None
+
+    #     target_logits = batch.logits[:, :-1][batch.target_mask[:, 1:]]
+    #     if div_target_logits:
+    #         target_logits = target_logits / div_target_logits
+    #     newer_embed = torch.cat([new_embed[:, :1], newer_embed], dim=1)
+    #     if torch.any(torch.isinf(newer_embed)):
+    #         print("inf in newer_embed")
+
+    #     # new_embed[batch.target_mask]
+    #     print("newer_embed_shape", newer_embed.shape)
+    #     reward_output = self(
+    #         input_ids=None,
+    #         attention_mask=torch.ones(newer_embed.shape[:2], device="cuda"),
+    #         inputs_embeds=newer_embed,
+    #     )
+
+    #     # /        return reward_output
+
+    #     for target_logit_index in range(target_start, target_end):
+    #         xbatch = batch.copy()
+    #         xbatch.target_mask = torch.zeros()
+    #         xbatch.target_mask[:, target_logit_index] = 1
+    #         self.logit_rewards_from_embedded_batch(xbatch)
+
+    ## What happens in reward_upo
+
+    def logits_loop_embed(
+        self,
+        prefixes,
+        suffix,
+        post_suffix,
+        targets,
+        base_embedding_model,
+        div_target_logits=False,
+    ):
+        prefix = prefixes[0]
+        target = targets[0]
+        long_ps = torch.cat([post_suffix, target])
+
+        base_grad_batch_long = base_embedding_model.splice_embedded_batch(
+            prefixes=[prefix],
+            suffix_tokens=suffix,
+            post_suffix_tokens=long_ps,
+            targets=[target[0:0]],
+            get_logits=False,
+        )
+        base_grad_batch_short = base_embedding_model.splice_embedded_batch(
+            prefixes=[prefix],
+            suffix_tokens=suffix,
+            post_suffix_tokens=post_suffix,
+            targets=[target],
+            get_logits=True,
+        )
+        # loop_batch = EmbeddedBatch(
+        #     # logits=base_grad_batch_short.logits,
+        #     embeddings=base_grad_batch_short.embeddings,
+        #     target_mask=base_grad_batch_short.target_mask,
+        #     suffix_tensor=base_grad_batch_short.suffix_tensor,
+        #     logits=base_grad_batch_short.logits
+        # )
+        logits = base_grad_batch_short.logits
+        start = base_grad_batch_short.logits.shape[1] - target.shape[0]
+        end = base_grad_batch_short.logits.shape[1]  # does logits have batch?
+        rewards = []
+        # base_grad_batch_short.suffix_tensor = base_grad_batch_short.suffix_tensor.bfloat16()
+        reward_grad_batch = self.embedding_model.splice_embedded_batch(
+            prefixes=[prefix],
+            suffix_tokens=suffix,
+            post_suffix_tokens=post_suffix,
+            targets=[target],
+            get_logits=False,
+            hot_suffix=base_grad_batch_short.suffix_tensor.detach(),
+        )
+        for target_logit_index in range(start, end - 1):
+            # base_grad_batch_short.logits =
+            # base_grad_batch_short.target_mask = torch.zeros(
+            #     1,
+            #     base_grad_batch_short.embeddings.shape[1] + 1,
+            #     device=base_grad_batch_short.logits.device,
+            #     dtype=torch.bool,
+            # )
+            # base_grad_batch_short.target_mask[:, -1] = 1
+
+            ###
+            target_logits = logits[:, target_logit_index - 1 : target_logit_index]
+            new_embed = reward_grad_batch.embeddings[:target_logit_index]
+            embedded_logits = self.embedding_model.embed(
+                F.softmax(target_logits, dim=-1),
+                onehot=True,
+            ).squeeze(0)
+            newer_embed = torch.cat([new_embed, embedded_logits], dim=1)
+
+            reward = self(
+                input_ids=None,
+                attention_mask=torch.ones(newer_embed.shape[:2], device="cuda"),
+                inputs_embeds=newer_embed,
+            )
+            ###
+
+            rewards.append(reward.end_rewards)
+            post_suffix = torch.cat([post_suffix, target[: start - target_logit_index]])
+            # base_grad_batch_short.embeddings = torch.cat(
+            #     [
+            #         base_grad_batch_short.embeddings,
+            #         base_grad_batch_long.embeddings[
+            #             :, target_logit_index  # uncertain abt batch
+            #         ].unsqueeze(1),
+            #     ],
+            #     dim=1,
+            # )
+        del base_grad_batch_long
+        return (
+            base_grad_batch_short,
+            reward_grad_batch,
+            torch.cat(rewards, dim=1).unsqueeze(0),
+        )
 
 
 #####
@@ -249,12 +451,22 @@ def get_reward_generator(
     device="cuda",
     model_path="ethz-spylab/reward_model",
 ):
+    """
+    Loads a reward model in evaluation mode on the specified device.
+
+    Parameters:
+    - device (str, optional)
+    - model_path (str, optional): the name of the reward model to load
+
+    Returns:
+    - reward_model: The loaded and initialized reward model ready for generating rewards.
+    """
     token = os.environ.get("HF_TOKEN")
 
     print("Loading reward model")
     reward_model = (
         RewardGenerator.from_pretrained(model_path, token=token)
-        .half()
+        .bfloat16()
         .eval()
         .to(device)
     )
