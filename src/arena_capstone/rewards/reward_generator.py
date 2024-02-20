@@ -147,15 +147,11 @@ class RewardGenerator(RewardModel):
         target_logits = target_logits
         if div_target_logits:
             target_logits = target_logits / div_target_logits
-        new_embed = reward_batch.embeddings.bfloat16()
+        new_embed = reward_batch.embeddings
         flat_embedded_logits = self.embedding_model.embed(
             F.softmax(target_logits, dim=-1),
             onehot=True,
         )
-        if flat_embedded_logits.dtype != torch.float16:
-            print("flat_embedded_logits is not float16")
-            flat_embedded_logits = flat_embedded_logits.bfloat16()
-
         if torch.any(torch.isinf(flat_embedded_logits)):
             print("inf in flat_embedded_logits")
 
@@ -307,7 +303,7 @@ class RewardGenerator(RewardModel):
     #     target_logits = batch.logits[:, :-1][batch.target_mask[:, 1:]]
     #     if div_target_logits:
     #         target_logits = target_logits / div_target_logits
-    #     new_embed = reward_batch.embeddings.bfloat16()
+    #     new_embed = reward_batch.embeddings
 
     #     flat_embedded_logits = self.embedding_model.embed(
     #         F.softmax(target_logits, dim=-1),
@@ -315,7 +311,7 @@ class RewardGenerator(RewardModel):
     #     )
     #     if flat_embedded_logits.dtype != torch.float16:
     #         print("flat_embedded_logits is not float16")
-    #         flat_embedded_logits = flat_embedded_logits.bfloat16()
+    #         flat_embedded_logits = flat_embedded_logits
 
     #     if torch.any(torch.isinf(flat_embedded_logits)):
     #         print("inf in flat_embedded_logits")
@@ -392,7 +388,7 @@ class RewardGenerator(RewardModel):
         start = base_grad_batch_short.logits.shape[1] - target.shape[0]
         end = base_grad_batch_short.logits.shape[1]  # does logits have batch?
         rewards = []
-        # base_grad_batch_short.suffix_tensor = base_grad_batch_short.suffix_tensor.bfloat16()
+        # base_grad_batch_short.suffix_tensor = base_grad_batch_short.suffix_tensor
         reward_grad_batch = self.embedding_model.splice_embedded_batch(
             prefixes=[prefix],
             suffix_tokens=suffix,
@@ -465,9 +461,6 @@ def get_reward_generator(
 
     print("Loading reward model")
     reward_model = (
-        RewardGenerator.from_pretrained(model_path, token=token)
-        .bfloat16()
-        .eval()
-        .to(device)
+        RewardGenerator.from_pretrained(model_path, token=token).eval().to(device)
     )
     return reward_model

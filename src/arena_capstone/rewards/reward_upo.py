@@ -163,11 +163,13 @@ class RewardUPO:
                 pad_token_id=self.tokenizer.pad_token_id,
                 bad_words_ids=[[bad] for bad in bad_tokens],
             ).squeeze()
+            print("gen target:", llamatokenize.detokenize(self.tokenizer, list(target)))
             target = target[prompt.shape[0] :]
             for bad_id in bad_tokens:
                 if torch.any(target == bad_id):
                     target = self.get_next_targets([prompt])[0]
                     break
+
             # print(target.shape)
             targets.append(target)
 
@@ -188,6 +190,8 @@ class RewardUPO:
 
         m = len(prefixes)
         m_c = self.cfg.m_c_start
+        TOKEN_INDEX_PENALTY = 0
+        TOKEN_INDEX_PENALTY_TOKENS = 0
         for run_num in tqdm(range(self.cfg.T)):  # repeat T times
             if (
                 self.cfg.generate_targets_at_run_num
@@ -247,7 +251,9 @@ class RewardUPO:
 
             mean_end_rewards = torch.mean(rewards)
             mean_reward = torch.mean(rewards)
-
+            loss = loss + self.high_token_index_penalty(
+                base_grad_batch.logits, TOKEN_INDEX_PENALTY
+            )
             loss.backward()
             del reward_grad_batch
 
@@ -297,6 +303,21 @@ class RewardUPO:
             # del loss, rewards, reward_grad_batch
             # gc.collect()
 
+            topk_values, topk_indices = torch.topk(
+                base_grad_batch.suffix_tensor.grad,
+                k=10,
+                dim=-1,
+                largest=False,
+            )
+            print(
+                llamatokenize.detokenize(
+                    self.tokenizer, [k.item() for i in list(topk_indices) for k in i]
+                )
+            )
+            torch.count_nonzero(topk_indices == self.tokenizer.bos_token_id)
+            torch.count_nonzero(topk_indices == self.tokenizer.eos_token_id)
+            torch.count_nonzero(topk_indices == self.tokenizer.pad_token_id)
+            print(topk_indices)
             next_suffixes = topkgrad.sample_replacements(
                 replacements=replacements,
                 suffix=self.suffix,
@@ -327,6 +348,9 @@ class RewardUPO:
                     )
                     # low, high = tokens_batch.target_bounds
                     losses = torch.sum(rewards, dim=(-1, -2))
+                    self.high_token_index_penalty(
+                        tokens_batch.logits, TOKEN_INDEX_PENALTY_TOKENS
+                    )
 
                     # if self.cfg.use_end_reward_selecting:
                     #     losses = rewards.end_rewards.squeeze(-1)
@@ -437,6 +461,10 @@ class RewardUPO:
             wandb.log({"table": self.table})
             wandb.log({"suffix_table": self.suffix_table})
             wandb.finish()
+
+    def high_token_index_penalty(self, logits, p=0.01):
+        penalty_mult = torch.arange(32001, device="cuda") * p
+        return torch.mean(penalty_mult * torch.log_softmax(logits, dim=-1))
 
     def repition_penalty(self, logits, tokens, length):
         tok_count = torch.zeros_like(logits[0, 0, :], requires_grad=False).detach()
@@ -620,7 +648,7 @@ def main():
     cfg = RewardUPOConfig(
         suffix=torch.randint(5, 1000, (6,), device=DEVICE),
         post_suffix=post_suffix,
-        batch_size=256,
+        batch_size=512,
         prefixes=prefixes,
         targets=targets,
         T=4000,
@@ -630,7 +658,7 @@ def main():
         use_end_reward_selecting=False,
         use_end_reward_gradients=False,
         generate_targets_at_run_num=1,
-        generate_length=10,
+        generate_length=14,
         num_prompts=num_prompts,
         print_text=True,
         eos_penalty_grad=0.22,
