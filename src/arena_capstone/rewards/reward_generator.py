@@ -19,9 +19,10 @@ from torch import Tensor
 
 
 class RewardGenerator(RewardModel):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, softmax=F.softmax, **kwargs):
         super().__init__(*args, **kwargs)
         self.embedding_model = EmbeddingFriendlyForCausalLM(self.model)
+        self.softmax = softmax
 
     def forward(  # pylint: disable=too-many-arguments
         self,
@@ -138,18 +139,23 @@ class RewardGenerator(RewardModel):
 
     def logit_rewards_from_embedded_batch(
         self,
-        batch: EmbeddedBatch,
+        # batch: EmbeddedBatch,
         reward_batch: EmbeddedBatch,
+        target_logits=None,
         div_target_logits=False,
+        temperature=1,
     ):
-        assert batch.logits is not None
+        # assert batch.logits is not None
 
-        target_logits = target_logits
+        target_logits = (
+            target_logits
+            or reward_batch.logits[:, :-1][reward_batch.target_mask[:, 1:]]
+        )
         if div_target_logits:
             target_logits = target_logits / div_target_logits
         new_embed = reward_batch.embeddings
         flat_embedded_logits = self.embedding_model.embed(
-            F.softmax(target_logits, dim=-1),
+            self.softmax(target_logits / temperature, dim=-1),
             onehot=True,
         )
         if torch.any(torch.isinf(flat_embedded_logits)):
@@ -198,7 +204,10 @@ class RewardGenerator(RewardModel):
         # tokens[:4] : "0 1 2 3"
 
     def logit_rewards_from_tokens_batch(
-        self, batch: TokensBatch, div_target_logits=False
+        self,
+        batch: TokensBatch,
+        div_target_logits=False,
+        temperature=1,
     ):
         """
         NO GRAD NEEDED FROM THIS
@@ -218,7 +227,7 @@ class RewardGenerator(RewardModel):
                 target_logits = target_logits / div_target_logits
             embedded_tokens = self.embedding_model.embed(batch.tokens[:, :target_start])
             embedded_logits = self.embedding_model.embed(
-                F.softmax(target_logits, dim=-1),
+                self.softmax(target_logits / temperature, dim=-1),
                 onehot=True,
             )
             print("batch tokens", batch.tokens.shape)
@@ -236,7 +245,10 @@ class RewardGenerator(RewardModel):
         return reward_output
 
     def logit_rewards_loop_over_tokens_batch(
-        self, batch: TokensBatch, div_target_logits=False
+        self,
+        batch: TokensBatch,
+        div_target_logits=False,
+        temperature=1,
     ):
         """
         NO GRAD NEEDED FROM THIS
@@ -269,7 +281,7 @@ class RewardGenerator(RewardModel):
                     batch.tokens[:, :target_logit_index]
                 )
                 embedded_logits = self.embedding_model.embed(
-                    F.softmax(target_logits, dim=-1),
+                    self.softmax(target_logits / temperature, dim=-1),
                     onehot=True,
                 )
                 embedded = torch.cat(
@@ -306,7 +318,7 @@ class RewardGenerator(RewardModel):
     #     new_embed = reward_batch.embeddings
 
     #     flat_embedded_logits = self.embedding_model.embed(
-    #         F.softmax(target_logits, dim=-1),
+    #         self.softmax(target_logits, dim=-1),
     #         onehot=True,
     #     )
     #     if flat_embedded_logits.dtype != torch.float16:
@@ -358,6 +370,7 @@ class RewardGenerator(RewardModel):
         targets,
         base_embedding_model,
         div_target_logits=False,
+        temperature=1,
     ):
         prefix = prefixes[0]
         target = targets[0]
@@ -377,6 +390,7 @@ class RewardGenerator(RewardModel):
             targets=[target],
             get_logits=True,
         )
+
         # loop_batch = EmbeddedBatch(
         #     # logits=base_grad_batch_short.logits,
         #     embeddings=base_grad_batch_short.embeddings,
@@ -384,6 +398,23 @@ class RewardGenerator(RewardModel):
         #     suffix_tensor=base_grad_batch_short.suffix_tensor,
         #     logits=base_grad_batch_short.logits
         # )
+        def cut(x, batch_dim=False):
+            if batch_dim:
+                return torch.cat(
+                    (
+                        x[:, : prefix.shape[0]],
+                        x[:, prefix.shape[0] + suffix.shape[0] :],
+                    ),
+                    dim=1,
+                )
+
+            return torch.cat(
+                (x[: prefix.shape[0]], x[prefix.shape[0] + suffix.shape[0]]), dim=0
+            )
+
+        base_grad_batch_short.logits = cut(base_grad_batch_short.logits, batch_dim=True)
+        base_grad_batch_long.logits = cut(base_grad_batch_long.logits, batch_dim=True)
+
         logits = base_grad_batch_short.logits
         start = base_grad_batch_short.logits.shape[1] - target.shape[0]
         end = base_grad_batch_short.logits.shape[1]  # does logits have batch?
@@ -391,11 +422,11 @@ class RewardGenerator(RewardModel):
         # base_grad_batch_short.suffix_tensor = base_grad_batch_short.suffix_tensor
         reward_grad_batch = self.embedding_model.splice_embedded_batch(
             prefixes=[prefix],
-            suffix_tokens=suffix,
+            suffix_tokens=torch.zeros(0, device="cuda", dtype=torch.long),
             post_suffix_tokens=post_suffix,
             targets=[target],
             get_logits=False,
-            hot_suffix=base_grad_batch_short.suffix_tensor.detach(),
+            # hot_suffix=base_grad_batch_short.suffix_tensor.detach(),
         )
         for target_logit_index in range(start, end - 1):
             # base_grad_batch_short.logits =
@@ -411,7 +442,7 @@ class RewardGenerator(RewardModel):
             target_logits = logits[:, target_logit_index - 1 : target_logit_index]
             new_embed = reward_grad_batch.embeddings[:target_logit_index]
             embedded_logits = self.embedding_model.embed(
-                F.softmax(target_logits, dim=-1),
+                self.softmax(target_logits / temperature, dim=-1),
                 onehot=True,
             ).squeeze(0)
             newer_embed = torch.cat([new_embed, embedded_logits], dim=1)

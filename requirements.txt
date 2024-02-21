@@ -13,3 +13,4 @@ transformers==4.37.2
 wandb
 colorama
 sentencepiece
+datasets

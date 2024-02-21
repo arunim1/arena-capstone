@@ -28,6 +28,7 @@ from arena_capstone.scripts.run_with_llama import get_llama
 from arena_capstone.rewards.reward_generator import (
     RewardGenerator,
     get_reward_generator,
+    RewardModelOutput,
 )
 import arena_capstone.algorithm.topk_gradients as topkgrad
 from arena_capstone.algorithm.embedding_model import (
@@ -230,33 +231,24 @@ class RewardUPO:
             #     reward_batch=reward_grad_batch,
             #     div_target_logits=20000**0.5,
             # )
-            base_grad_batch, reward_grad_batch, rewards = (
-                self.reward_model.logits_loop_embed(
-                    prefixes=prefixes[:m_c],
-                    suffix=self.suffix,
-                    post_suffix=self.cfg.post_suffix,
-                    targets=targets[:m_c],
-                    base_embedding_model=self.embedding_model,
-                    temperature=self.cfg.temperature,
-                )
+
+            base_grad_batch, reward_batch, reward = self.generate_with_gumbel(
+                gumbel_softmax=self.reward_model.softmax,
+                prefix=prefixes[0],
+                suffix=self.suffix,
+                post_suffix=self.cfg.post_suffix,
+                generate_length=self.cfg.generate_length,
+                bad_words_ids=[],
             )
+
+            rewards = reward.end_rewards.squeeze(-1)
 
             #
             loss = torch.sum(rewards)
-            # if self.cfg.use_end_reward_gradients:
-            #     loss = torch.sum(rewards.end_rewards)
-            # else:
-            #     loss = torch.sum(
-            #         rewards.rewards[reward_grad_batch.target_mask]
-            #     )  # TODO REVIEW IM NOT SURE ABOUT THIS OFFSET I JUST ADDED
-            #     # loss = torch.sum(rewards.rewards)
-
             mean_end_rewards = torch.mean(rewards)
             mean_reward = torch.mean(rewards)
-            loss = loss + self.high_token_index_penalty(
-                base_grad_batch.logits, TOKEN_INDEX_PENALTY
-            )
             loss.backward()
+
             del reward_grad_batch
 
             if torch.isnan(mean_reward).any():
@@ -495,6 +487,68 @@ class RewardUPO:
                 wandb.finish()
             raise e
 
+    def generate_with_gumbel(
+        self,
+        gumbel_softmax,
+        prefix,
+        suffix,
+        post_suffix,
+        generate_length,
+        bad_words_ids=[],
+    ) -> RewardModelOutput:  # not 100% on the return type
+
+        batch = self.embedding_model.splice_embedded_batch(
+            [prefix],
+            suffix,
+            post_suffix,
+            targets=[torch.zeros(0, device=DEVICE, dtype=torch.long)],
+        )
+        reward_batch = self.reward_model.embedding_model.splice_embedded_batch(
+            [prefix],
+            torch.zeros(0, device=DEVICE, dtype=torch.long),
+            post_suffix,
+            targets=[torch.zeros(0, device=DEVICE, dtype=torch.long)],
+        )
+        # generate_length = max_length - prefixes.shape[1]
+        target_logits = []
+        for i in range(generate_length):
+            logits_next = self.embedding_model.forward_from_embed(
+                batch.embeddings
+            ).logits
+            one_hot_next_token = gumbel_softmax(logits_next)
+            target_logits.append(logits_next)
+            one_hot_embedded = self.embedding_model.embed(
+                one_hot_next_token, onehot=True
+            ).squeeze(0)
+            batch.embeddings = torch.cat([batch.embeddings, one_hot_embedded], dim=1)
+            one_hot_reward_embedded = self.reward_model.embedding_model.embed(
+                one_hot_next_token, onehot=True
+            ).squeeze(0)
+            reward_batch.embeddings = torch.cat(
+                [reward_batch.embeddings, one_hot_reward_embedded], dim=1
+            )
+
+        batch.target_mask = torch.cat(
+            (
+                batch.target_mask,
+                torch.ones(1, generate_length, device="cuda", dtype=torch.bool),
+            ),
+            dim=1,
+        )
+        reward_batch.target_mask = torch.cat(
+            (
+                reward_batch.target_mask,
+                torch.ones(1, generate_length, device="cuda", dtype=torch.bool),
+            ),
+            dim=1,
+        )
+        reward_output = self.reward_model(
+            input_ids=None,
+            attention_mask=torch.ones(reward_batch.embeddings.shape[:2], device="cuda"),
+            inputs_embeds=reward_batch.embeddings,
+        )
+        return batch, reward_batch, reward_output
+
 
 def get_completions(
     upo: RewardUPO, targets: Optional[List[Tensor]] = None, prefixes=None
@@ -654,10 +708,22 @@ def main():
 
     # post_suffix = torch.zeros(0, device=DEVICE, dtype=torch.long)
 
+    # print("checking")
+    # assert torch.allclose(
+    #     reward_model.get_input_embeddings().weight, model.get_input_embeddings().weight
+    # )
+
+    # assert torch.all(
+    #     reward_model.get_input_embeddings().weight
+    #     == model.get_input_embeddings().weight
+    # )
+    # print("checked")
+    # assert False
+
     cfg = RewardUPOConfig(
         suffix=torch.randint(5, 1000, (6,), device=DEVICE),
         post_suffix=post_suffix,
-        batch_size=256,
+        batch_size=128,
         prefixes=prefixes,
         targets=targets,
         T=4000,
@@ -667,7 +733,7 @@ def main():
         use_end_reward_selecting=False,
         use_end_reward_gradients=False,
         generate_targets_at_run_num=1,
-        generate_length=14,
+        generate_length=5,
         num_prompts=num_prompts,
         print_text=True,
         # eos_penalty_grad=0.22,
