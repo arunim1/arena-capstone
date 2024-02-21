@@ -188,7 +188,7 @@ class RewardUPO:
 
         # TODO replace with generated strings maybe?
 
-        targets = self.cfg.targets
+        # targets = self.cfg.targets
 
         m = len(prefixes)
         m_c = self.cfg.m_c_start
@@ -258,28 +258,10 @@ class RewardUPO:
             )
             loss.backward()
             del reward_grad_batch
-
             if torch.isnan(mean_reward).any():
                 print("mean_reward is nan")
-                print("suffix", self.suffix)
-                print("grad,", base_grad_batch.suffix_tensor.grad)
-                # print("rewards", rewards.rewards)
-                # print("end", rewards.end_rewards)
-                logits_softmaxxed = base_grad_batch.logits[base_grad_batch.target_mask]
-                print("logits_softmaxxed sum ", logits_softmaxxed.sum(-1))
-                print("targets:", targets)
-                set_targets = [set(t.tolist()) for t in targets]
-                s = set()
-                for t in set_targets:
-                    s = s.union(t)
-                if SET_THING_OF_NANS is None:
-                    SET_THING_OF_NANS = s
-                else:
-                    SET_THING_OF_NANS = SET_THING_OF_NANS.intersection(s)
-                print("SET_THING_OF_NANS", SET_THING_OF_NANS)
 
-            #########
-            # print(reward_grad_batch.suffix_tensor.grad)
+            print(reward_grad_batch.suffix_tensor.grad)
             # assert False
             # does anything here on need to change? (before the inference mode)
 
@@ -349,17 +331,17 @@ class RewardUPO:
                         batch=tokens_batch,
                         temperature=self.cfg.temperature,
                     )
+                    ### old:
                     # low, high = tokens_batch.target_bounds
-                    losses = torch.sum(rewards, dim=(-1, -2))
-                    self.high_token_index_penalty(
-                        tokens_batch.logits, TOKEN_INDEX_PENALTY_TOKENS
-                    )
-
                     # if self.cfg.use_end_reward_selecting:
                     #     losses = rewards.end_rewards.squeeze(-1)
                     # else:
                     #     losses = torch.sum(rewards.rewards[:, low:high], dim=(-1, -2))
-                    #     # losses = torch.sum(rewards.rewards, dim=(-1, -2))
+
+                    losses = torch.sum(rewards, dim=(-1, -2))
+                    self.high_token_index_penalty(
+                        tokens_batch.logits, TOKEN_INDEX_PENALTY_TOKENS
+                    )
 
                     if torch.isnan(losses).any():
                         dprint("losses is nan")
@@ -430,8 +412,7 @@ class RewardUPO:
                     )
                     print("m_c:", m_c)
                     print(Style.RESET_ALL)
-                print("mean_reward:", mean_reward.item())
-                print("mean_end_reward:", mean_end_rewards.item())
+                    print("mean_reward:", mean_reward.item())
             if self.cfg.use_wandb:
                 wandb.log(
                     {"loss": maxes_over_batch[best_suffix_idx].item()}, step=run_num + 1

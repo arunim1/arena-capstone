@@ -210,8 +210,8 @@ class RewardGenerator(RewardModel):
         temperature=1,
     ):
         """
-        NO GRAD NEEDED FROM THIS
-        or provided ;)
+        Calculates and returns rewards over across batches for all target logits (all at once), from a TokensBatch.
+        NO GRAD: Cannot backward through these reward values!
         """
         assert batch.logits is not None
         with torch.inference_mode():
@@ -230,10 +230,6 @@ class RewardGenerator(RewardModel):
                 self.softmax(target_logits / temperature, dim=-1),
                 onehot=True,
             )
-            print("batch tokens", batch.tokens.shape)
-            print("batch logits", batch.logits.shape)
-            print("embedded_tokens", embedded_tokens.shape)
-            print("embedded_logits", embedded_logits.shape)
             embedded = torch.cat(
                 [embedded_tokens.squeeze(0), embedded_logits.squeeze(0)], dim=1
             )

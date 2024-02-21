@@ -76,9 +76,16 @@ def do_upo(device):
 
     harmful_behavior_data = pd.read_csv("./data/advbench/harmful_behaviors.csv")
     harmful_behavior_data.head()
-    m = 64
-    prefix_strs = harmful_behavior_data["goal"].tolist()[:m]
-    target_strs = harmful_behavior_data["target"].tolist()[:m]
+
+    prefix_strs = harmful_behavior_data["goal"].tolist()
+    target_strs = harmful_behavior_data["target"].tolist()
+
+    m = min(len(prefix_strs), len(target_strs))
+    print("optimizing for ", m, " examples")
+    prefix_strs = prefix_strs[:m]
+    target_strs = target_strs[:m]
+
+    prefix_strs = ["HUMAN: " + prefix for prefix in prefix_strs]
 
     targets = [
         torch.tensor(tokens, device=device, dtype=torch.long)[1:]
@@ -89,17 +96,31 @@ def do_upo(device):
         torch.tensor(tokens, device=device, dtype=torch.long)
         for tokens in tokenizer(prefix_strs).input_ids
     ]
+
+    post_suffix_str = "ASSISTANT: "
+    post_suffix = tokenizer(post_suffix_str, return_tensors="pt").input_ids
+    post_suffix = post_suffix.squeeze().to(device)
+    # remove bos <s> token: 
+    post_suffix = post_suffix[1:]
+
+    init_suffix = torch.randint(0, llamamodel.config.vocab_size, (12,), device=device)
+
+    init_suffix_list = [23494,11850,450,10729,28105,18880,13791,22893,22550,29256,20256,28360]
+
+    init_suffix = torch.tensor(init_suffix_list, device=device, dtype=torch.long)
+
     upoconfig = UPOConfig(
         modelname=model_str,
-        suffix=torch.randint(0, llamamodel.config.vocab_size, (8,), device=device),
+        suffix=init_suffix,
         targets=targets,
         prefixes=prefixes,
-        k=32,
+        post_suffix=post_suffix,
+        k=128,
         batch_size=256,
         device=device,
-        T=2000,
-        threshold=2,
-        use_wandb=False,
+        T=500,
+        threshold=1.3,
+        use_wandb=True,
     )
 
     upo = UPO(
@@ -108,7 +129,7 @@ def do_upo(device):
         embedding_model=embedding_friendly,
     )
     with torch.cuda.amp.autocast():
-        upo.upo(print_between=True)
+        upo.run()
 
 
 def main(device="cuda"):
