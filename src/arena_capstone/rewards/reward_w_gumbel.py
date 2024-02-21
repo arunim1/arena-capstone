@@ -232,7 +232,7 @@ class RewardUPO:
             #     div_target_logits=20000**0.5,
             # )
 
-            base_grad_batch, reward_batch, reward = self.generate_with_gumbel(
+            base_grad_batch, reward_grad_batch, reward = self.generate_with_gumbel(
                 gumbel_softmax=self.reward_model.softmax,
                 prefix=prefixes[0],
                 suffix=self.suffix,
