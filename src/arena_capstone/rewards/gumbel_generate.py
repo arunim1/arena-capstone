@@ -16,32 +16,35 @@ target = self.model.generate(
 """
 
 import torch
+from torch import Tensor
 from transformers import LlamaForCausalLM
 from arena_capstone.algorithm.embedding_model import EmbeddingFriendlyForCausalLM
+import torch.nn.functional as F
 
 # from arena_capstone.algorithm
 # from arena_capstone.algorithm
 
 
-def generate(
-    model: LlamaForCausalLM,
-    embedding_model: EmbeddingFriendlyForCausalLM,
-    gumbel_softmax,
-    reward_model,
-    prefix,
-    suffix,
-    post_suffix,
-    max_length,
-    bad_words_ids=[],
+def gumbel_softmax(
+    logits: Tensor,
+    tau: float = 1,
+    tau_backward: float = None,
+    hard: bool = False,
+    noise_scale: float = 1,
 ):
+    # tau_backward = tau_backward or tau
+    gumbels = (
+        -torch.empty_like(logits).exponential_().log() * noise_scale
+    )  # ~Gumbel(0,1)
 
-    batch = embedding_model.splice_embedded_batch(
-        prefix, suffix, post_suffix, targets=[]
-    )
-    generate_length = max_length - prefix.shape[1]
+    input_gumbels = (logits / noise_scale + gumbels) / tau  # ~Gumbel(logits,tau)
 
-    for i in range(generate_length):
-        logits_next = embedding_model.forward_from_embed(batch.embeddings)
-        one_hot_next_token = gumbel_softmax(logits_next)
-        one_hot_embedded = embedding_model.embed(one_hot_next_token, onehot=True)
-        batch.embeddings = torch.cat([batch.embeddings, one_hot_embedded], dim=1)
+    y_soft = F.softmax(input_gumbels, dim=-1)
+    if hard:
+        y_hard = y_soft.max(-1, keepdim=True)[0].eq(y_soft).float()
+        return y_hard - y_soft.detach() + y_soft
+    if not tau_backward:
+        return y_soft
+    input_gumbels_bak = (logits / noise_scale + gumbels) / tau_backward
+    y_soft_bak = F.softmax(input_gumbels_bak, dim=-1)
+    return y_soft.detach() + y_soft_bak - y_soft_bak.detach()

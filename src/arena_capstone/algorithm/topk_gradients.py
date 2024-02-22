@@ -8,12 +8,14 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 from arena_capstone.algorithm.embedding_model import EmbeddedBatch
+from typing import Optional
 
 
 def top_k_substitutions(
-    batch: EmbeddedBatch,
-    k: int,
+    grad=None,
+    k: int = 0,
     exclude: Optional[Set[int]] = None,
+    batch: Optional[EmbeddedBatch] = None,
 ) -> List[Set[int]]:
     """
     Returns a list of sets of the top k substitutions for each token in suffix_tokens. If prefixes has length > 1, we sum over the gradients of each prefix. Otherwise, we just use the gradient of the single prefix (eg. GCG algorithm).
@@ -21,14 +23,18 @@ def top_k_substitutions(
 
     Output: List[Set[int]], where len(List) == len(suffix_tokens) and size(Set) == k
     """
+    assert (grad is None) or (batch is None)
+    grad = grad if grad is not None else grad
+    if isinstance(grad, EmbeddedBatch):
+        grad = grad.suffix_tensor.grad
 
-    assert batch.suffix_tensor.grad is not None
+    assert grad is not None
     if exclude is not None:
         for e in exclude:
-            batch.suffix_tensor.grad[..., e] = torch.inf
+            grad[..., e] = torch.inf
 
     topk_values, topk_indices = torch.topk(
-        batch.suffix_tensor.grad,
+        grad,
         k=k,
         dim=-1,
         largest=False,

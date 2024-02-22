@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from logging import config
 from secrets import token_bytes
 from typing import List, Optional, Set, Tuple, Union
-
+from arena_capstone.rewards.gumbel_softmax import gumbel_softmax
 import einops
 from numpy import pad
 import pandas as pd
@@ -15,6 +15,8 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor, embedding
 from tqdm import tqdm
 import torch.nn.functional as F
+import torch.nn as nn
+
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -49,6 +51,8 @@ def isinfnan(t):
 
 
 import arena_capstone.scripts.llamatokenize as llamatokenize
+import torch.nn as nn
+import torch.nn.functional as F
 
 
 @dataclass
@@ -84,6 +88,37 @@ def dprint(*args, **kwargs):
         print(*args, **kwargs)
 
 
+class Suffix(nn.Module):
+    def __init__(
+        self,
+        suffix_logits: Optional[Float[Tensor, "suffix_len d_vocab"]],
+        suffix_len: Optional[int] = 5,
+        tau=1,
+        tau_backward=None,
+        noise_scale=1,
+    ):
+        if suffix_logits is None:
+            suffix_logits = torch.randn(suffix_len, 32000, device=DEVICE)
+        self.suffix_logits = nn.Parameter(suffix_logits.clone())
+        self.tau = tau
+        self.tau_backward = tau_backward
+        self.hard = False
+        self.noise_scale = noise_scale
+
+    def softmax(self, logits, tau=None):
+        return gumbel_softmax(
+            logits,
+            tau=tau or self.tau,
+            hard=self.hard,
+            tau_backward=self.tau_backward,
+            noise_scale=self.noise_scale,
+            dim=-1,
+        )
+
+    def forward(self):
+        return self.softmax(self.suffix_logits)
+
+
 class RewardUPO:
     def __init__(
         self,
@@ -104,7 +139,13 @@ class RewardUPO:
         self.reward_model = reward_model
         self.token_gradient_generator = TokenGradients(model, self.embedding_model)
         self.tokenizer = tokenizer
-        self.suffix = cfg.suffix.clone()
+        self.suffix = Suffix(
+            cfg.suffix,
+            tau=cfg.suffix_tau,
+            tau_backward=cfg.suffix_tau_backward,
+            noise_scale=cfg.suffix_noise_scale,
+        )
+
         self.table = (
             wandb.Table(columns=["prefix", "suffix", "completion", "step"])
             if self.cfg.use_wandb
@@ -133,75 +174,25 @@ class RewardUPO:
 
         self.dataset = dataset()
 
-    def get_prompt(self, prefixes):
-        prompts = [
-            torch.cat((prefix, self.suffix, self.cfg.post_suffix), dim=0)
-            for prefix in prefixes
-        ]
-        return prompts
-
-    def get_next_prefixes(self):
-        prefix_strs = [next(self.dataset) for _ in range(self.cfg.num_prompts)]
-
-        prefixes = [
-            torch.tensor(tokens, device=DEVICE, dtype=torch.long)
-            for tokens in self.tokenizer(prefix_strs).input_ids
-        ]
-        return prefixes
-
-    def next_grad(self, newest_grad):
-        if self.grad_acc is None:
-            self.grad_acc = newest_grad * (1 - self.cfg.grad_acc_beta1)
-            self.gradsquares = newest_grad**2 * (1 - self.cfg.grad_acc_beta2)
-
-        self.gradsquares = self.gradsquares * (
-            self.cfg.grad_acc_beta2 * 2 - 1
-        ) + newest_grad**2 * (1 - 1 * self.cfg.grad_acc_beta2)
-        self.grad_acc = self.grad_acc * self.cfg.grad_acc_beta1 + newest_grad * (
-            1 - self.cfg.grad_acc_beta1
-        )
-
-        next_grad = self.grad_acc / (self.gradsquares + 1e-7).sqrt()
-        return next_grad
-
-    def get_next_targets(self, prompts):
-        bad_tokens = [
-            self.tokenizer.eos_token_id,
-            self.tokenizer.bos_token_id,
-            self.tokenizer.pad_token_id,
-        ]
-        targets = []
-        # logit processor to remove EOS and BOS from the logits
-        # processor = LogitsProcessorList([LogitsProcessor()])
-
-        for prompt in prompts:
-            all_ones_mask = torch.ones_like(prompt, dtype=torch.bool)
-            print("prompt", prompt.shape, self.tokenizer.decode(prompt))
-            target = self.model.generate(
-                prompt.unsqueeze(0),
-                # attention_mask=all_ones_mask.unsqueeze(0),
-                # repitition_penalty=1.2,
-                max_length=self.cfg.generate_length + prompt.shape[0],
-                do_sample=True,
-                # eos_token_id=self.tokenizer.eos_token_id,
-                # bos_token_id=self.tokenizer.bos_token_id,
-                # pad_token_id=self.tokenizer.pad_token_id,
-                # temperature=1,
-                attention_mask=all_ones_mask.unsqueeze(0),
-                pad_token_id=self.tokenizer.pad_token_id,
-                bad_words_ids=[[bad] for bad in bad_tokens],
-            ).squeeze()
-            print("gen target:", llamatokenize.detokenize(self.tokenizer, list(target)))
-            target = target[prompt.shape[0] :]
-            for bad_id in bad_tokens:
-                if torch.any(target == bad_id):
-                    target = self.get_next_targets([prompt])[0]
-                    break
-
-            # print(target.shape)
-            targets.append(target)
-
-        return targets
+    def train(self, optim=None):
+        optim = optim or torch.optim.Adam(self.suffix.parameters(), lr=0.01)
+        for run_num in tqdm(range(self.cfg.T)):
+            prefixes, prefix_mask = self.get_next_prefixes()
+            suffix = self.suffix()
+            embedded_prompt, prompt_attention_mask = self.embedding_model.embed_nice(
+                (prefixes, prefix_mask), suffix, self.cfg.post_suffix
+            )
+            sequence_logits = self.generate_fn(
+                embedded_prompt, prompt_attention_mask
+            )  # also uses gumbel
+            reward_seq_embedded = self.reward_model.embedding_model.embed_nice(
+                prefixes, self.cfg.post_suffix, sequence_logits
+            )
+            reward = reward_fn(sequence)
+            loss = reward.mean()
+            loss.backward()
+            optim.step()
+            optim.zero_grad()
 
     def upo_over_rewards(self, print_between=False):
         """ """
@@ -218,10 +209,6 @@ class RewardUPO:
 
         m = len(prefixes)
         m_c = self.cfg.m_c_start
-        TOKEN_INDEX_PENALTY = 0
-        TOKEN_INDEX_PENALTY_TOKENS = 0
-        grad_decay_factor = 0.99
-        grad_acc = 0
         for run_num in tqdm(range(self.cfg.T)):  # repeat T times
             if (
                 self.cfg.generate_targets_at_run_num
@@ -278,184 +265,17 @@ class RewardUPO:
 
             del reward_grad_batch
 
-            if torch.isnan(mean_reward).any():
-                print("mean_reward is nan")
-                print("suffix", self.suffix)
-                print("grad,", base_grad_batch.suffix_tensor.grad)
-                # print("rewards", rewards.rewards)
-                # print("end", rewards.end_rewards)
-                logits_softmaxxed = base_grad_batch.logits[base_grad_batch.target_mask]
-                print("logits_softmaxxed sum ", logits_softmaxxed.sum(-1))
-                print("targets:", targets)
-                set_targets = [set(t.tolist()) for t in targets]
-                s = set()
-                for t in set_targets:
-                    s = s.union(t)
-                if SET_THING_OF_NANS is None:
-                    SET_THING_OF_NANS = s
-                else:
-                    SET_THING_OF_NANS = SET_THING_OF_NANS.intersection(s)
-                print("SET_THING_OF_NANS", SET_THING_OF_NANS)
-
-            #########
-            # print(reward_grad_batch.suffix_tensor.grad)
-            # assert False
-            # does anything here on need to change? (before the inference mode)
-
-            # reward_grad_batch = self.embedding_model.splice_embedded_batch(
-            #     prefixes=prefixes[:m_c],
-            #     suffix_tokens=self.suffix,
-            #     post_suffix_tokens=self.cfg.post_suffix,
-            #     targets=targets[:m_c],
-            #     get_logits=False,
-            # )
-            # reward_grad_batch.suffix_tensor.grad = torch.rand_like(reward_grad_batch.suffix_tensor)
-            bad_tokens = {
-                self.tokenizer.eos_token_id,
-                self.tokenizer.bos_token_id,
-                self.tokenizer.pad_token_id,
-            }
-            del base_grad_batch.embeddings
-            dprint("grads", base_grad_batch.suffix_tensor.grad)
-            grad = self.next_grad(base_grad_batch.suffix_tensor.grad)
-            replacements = topkgrad.top_k_substitutions(
-                grad=grad, k=self.cfg.k, exclude=bad_tokens
-            )
-            dprint("replacements", replacements)
-            # del loss, rewards, reward_grad_batch
-            # gc.collect()
-
-            topk_values, topk_indices = torch.topk(
-                base_grad_batch.suffix_tensor.grad,
-                k=10,
-                dim=-1,
-                largest=False,
-            )
-            print(
-                llamatokenize.detokenize(
-                    self.tokenizer, [k.item() for i in list(topk_indices) for k in i]
-                )
-            )
-            torch.count_nonzero(topk_indices == self.tokenizer.bos_token_id)
-            torch.count_nonzero(topk_indices == self.tokenizer.eos_token_id)
-            torch.count_nonzero(topk_indices == self.tokenizer.pad_token_id)
-            print(topk_indices)
-            next_suffixes = topkgrad.sample_replacements(
-                replacements=replacements,
-                suffix=self.suffix,
-                batch_size=self.cfg.batch_size,
-            )
-            maxes_over_batch = torch.full(
-                (self.cfg.batch_size,), -torch.inf, device=self.cfg.device
-            )
-            sum_over_batch = torch.zeros(self.cfg.batch_size, device=self.cfg.device)
-            gc.collect()
-
-            with torch.inference_mode():
-                # the pog for loop (saves memory)
-                for i in range(m_c):
-                    tokens_batch = self.embedding_model.splice_tokens_batch(
-                        prefix=prefixes[i],
-                        suffix_tokens=next_suffixes,
-                        post_suffix=self.cfg.post_suffix,
-                        target=targets[i],
-                        get_logits=True,
-                    )
-
-                    # rewards = self.reward_model.logit_rewards_from_tokens_batch(
-                    #     batch=tokens_batch
-                    # )
-                    rewards = self.reward_model.logit_rewards_loop_over_tokens_batch(
-                        batch=tokens_batch,
-                        temperature=self.cfg.temperature,
-                    )
-                    # low, high = tokens_batch.target_bounds
-                    losses = torch.sum(rewards, dim=(-1, -2))
-                    self.high_token_index_penalty(
-                        tokens_batch.logits, TOKEN_INDEX_PENALTY_TOKENS
-                    )
-
-                    # if self.cfg.use_end_reward_selecting:
-                    #     losses = rewards.end_rewards.squeeze(-1)
-                    # else:
-                    #     losses = torch.sum(rewards.rewards[:, low:high], dim=(-1, -2))
-                    #     # losses = torch.sum(rewards.rewards, dim=(-1, -2))
-
-                    if torch.isnan(losses).any():
-                        dprint("losses is nan")
-                        dprint(losses)
-                        nansuffix = next_suffixes[torch.isnan(losses)]
-                        dprint("nan next_suffixes", nansuffix)
-                        dprint("normal suffix", self.suffix)
-                        dprint(
-                            "nan tokens_batch", tokens_batch.tokens[torch.isnan(losses)]
-                        )
-                        dprint(
-                            "nan tokens for suffix",
-                            [
-                                llamatokenize.detokenize(self.tokenizer, t)
-                                for t in nansuffix
-                            ],
-                        )
-
-                    # losses += self.eos_penalty(tokens_batch.logits)
-
-                    # losses += 0.2 * self.repition_penalty(
-                    #     tokens_batch.logits[
-                    #         :,
-                    #         tokens_batch.target_bounds[0] : tokens_batch.target_bounds[
-                    #             1
-                    #         ],
-                    #     ],
-                    #     targets[i],
-                    #     targets[i].shape[0],
-                    # )
-
-                    sum_over_batch += losses
-                    assert maxes_over_batch.shape == losses.shape
-                    maxes_over_batch = torch.max(maxes_over_batch, losses)
-
-                    del rewards, tokens_batch, losses
-                    gc.collect()
-
-            # losses_batch_reshaped          ->
-            # losses_batch_mean_over_prompt  [num_batches]   -> argmin
-            sum_over_batch[torch.isnan(sum_over_batch)] = torch.inf
-            best_suffix_idx = torch.argmin(sum_over_batch)
-            best_suffix = next_suffixes[best_suffix_idx]
-
-            self.suffix = best_suffix
-            if self.cfg.use_wandb:
-                self.suffix_table.add_data(
-                    str(self.suffix.tolist()),
-                    run_num + 1,
-                )
-
-            if maxes_over_batch[best_suffix_idx].max() < self.cfg.threshold and m_c < m:
-                m_c += 1
-                self.data += [next(pd)]
-
-            del next_suffixes
             gc.collect()
 
             if print_between:
                 if run_num % 5 == 0:
                     if run_num % 5 == 0:
                         generate(self, targets=targets, prefixes=prefixes)
-                    print(Back.BLUE + "    ", self.tokenizer.decode(best_suffix))
-                    print(
-                        "loss opt:",
-                        maxes_over_batch[best_suffix_idx].item(),
-                        sum_over_batch.mean() / m_c,
-                    )
                     print("m_c:", m_c)
                     print(Style.RESET_ALL)
                 print("mean_reward:", mean_reward.item())
                 print("mean_end_reward:", mean_end_rewards.item())
             if self.cfg.use_wandb:
-                wandb.log(
-                    {"loss": maxes_over_batch[best_suffix_idx].item()}, step=run_num + 1
-                )
                 wandb.log(
                     {
                         "mean_reward": mean_reward.item(),
@@ -472,9 +292,6 @@ class RewardUPO:
 
         if self.cfg.use_wandb:
             wandb.log(
-                {"loss": maxes_over_batch[best_suffix_idx].item()}, step=run_num + 1
-            )
-            wandb.log(
                 {
                     "mean_reward": mean_reward.item(),
                     "mean_end_reward": mean_end_rewards.item(),
@@ -485,25 +302,58 @@ class RewardUPO:
             wandb.log({"suffix_table": self.suffix_table})
             wandb.finish()
 
-    def high_token_index_penalty(self, logits, p=0.01):
-        penalty_mult = torch.arange(32001, device="cuda") * p
-        return torch.mean(penalty_mult * torch.log_softmax(logits, dim=-1))
+    def get_prompt(self, prefixes):
+        prompts = [
+            torch.cat((prefix, self.suffix, self.cfg.post_suffix), dim=0)
+            for prefix in prefixes
+        ]
+        return prompts
 
-    def repition_penalty(self, logits, tokens, length):
-        tok_count = torch.zeros_like(logits[0, 0, :], requires_grad=False).detach()
-        penalty = torch.zeros_like(logits[:, 0, 0])
-        seq_log = einops.rearrange(logits, "... seq vocab -> ... vocab seq")
-        for i in range(length):
-            token = tokens[..., i]
-            tok_count[..., token] += 1
-            tok_count = tok_count.detach()
-            penalty += torch.sum(
-                seq_log[..., token, i:] * tok_count[token].detach(), dim=-1
-            ) * ((token + 800) / 5000)
-        return penalty
+    def get_next_prefixes(self):
+        prefix_strs = [next(self.dataset) for _ in range(self.cfg.num_prompts)]
+        tokenized = self.tokenizer(prefix_strs)
+        prefixes = tokenized.input_ids
+        masks = tokenized.attention_mask
+        return prefixes, masks
 
-    def eos_penalty(self, suffix_tensor):
-        return suffix_tensor[..., self.tokenizer.eos_token_id].sum(-1)
+    def get_next_targets(self, prompts):
+        bad_tokens = [
+            self.tokenizer.eos_token_id,
+            self.tokenizer.bos_token_id,
+            self.tokenizer.pad_token_id,
+        ]
+        targets = []
+        # logit processor to remove EOS and BOS from the logits
+        # processor = LogitsProcessorList([LogitsProcessor()])
+
+        for prompt in prompts:
+            all_ones_mask = torch.ones_like(prompt, dtype=torch.bool)
+            print("prompt", prompt.shape, self.tokenizer.decode(prompt))
+            target = self.model.generate(
+                prompt.unsqueeze(0),
+                # attention_mask=all_ones_mask.unsqueeze(0),
+                # repitition_penalty=1.2,
+                max_length=self.cfg.generate_length + prompt.shape[0],
+                do_sample=True,
+                # eos_token_id=self.tokenizer.eos_token_id,
+                # bos_token_id=self.tokenizer.bos_token_id,
+                # pad_token_id=self.tokenizer.pad_token_id,
+                # temperature=1,
+                attention_mask=all_ones_mask.unsqueeze(0),
+                pad_token_id=self.tokenizer.pad_token_id,
+                bad_words_ids=[[bad] for bad in bad_tokens],
+            ).squeeze()
+            print("gen target:", llamatokenize.detokenize(self.tokenizer, list(target)))
+            target = target[prompt.shape[0] :]
+            for bad_id in bad_tokens:
+                if torch.any(target == bad_id):
+                    target = self.get_next_targets([prompt])[0]
+                    break
+
+            # print(target.shape)
+            targets.append(target)
+
+        return targets
 
     def run(self):
         try:
@@ -515,40 +365,55 @@ class RewardUPO:
                 wandb.finish()
             raise e
 
-    def generate_with_gumbel(
+    def generate_fn(
         self,
-        gumbel_softmax,
-        prefix,
-        suffix,
-        post_suffix,
-        generate_length,
-        bad_words_ids=[],
-    ) -> RewardModelOutput:  # not 100% on the return type
+        embedded_prompt: Float[Tensor, "batch prompt_len d_model"],
+        prompt_attention_mask: Float[Tensor, "batch prompt_len"],
+    ) -> List[Tensor]:  # not 100% on the return type
+        def gen_gumbel_softmax(logits, tau=None):
+            return gumbel_softmax(
+                tau=tau or self.gen_tau,
+                hard=self.gen_hard,
+                tau_backward=self.gen_tau_backward,
+                noise_scale=self.gen_noise_scale,
+                dim=-1,
+            )
 
-        batch = self.embedding_model.splice_embedded_batch(
-            [prefix],
-            suffix,
-            post_suffix,
-            targets=[torch.zeros(0, device=DEVICE, dtype=torch.long)],
-        )
-        reward_batch = self.reward_model.embedding_model.splice_embedded_batch(
-            [prefix],
-            torch.zeros(0, device=DEVICE, dtype=torch.long),
-            post_suffix,
-            targets=[torch.zeros(0, device=DEVICE, dtype=torch.long)],
-        )
-        # generate_length = max_length - prefixes.shape[1]
+        # batch = self.embedding_model.splice_embedded_batch(
+        #     [prefix],
+        #     suffix,
+        #     post_suffix,
+        #     targets=[torch.zeros(0, device=DEVICE, dtype=torch.long)],
+        # )
+        # reward_batch = self.reward_model.embedding_model.splice_embedded_batch(
+        #     [prefix],
+        #     torch.zeros(0, device=DEVICE, dtype=torch.long),
+        #     post_suffix,
+        #     targets=[torch.zeros(0, device=DEVICE, dtype=torch.long)],
+        # )
+        # # generate_length = max_length - prefixes.shape[1]
         target_logits = []
-        for i in range(generate_length):
+
+        for i in range(self.cfg.generate_length):
             logits_next = self.embedding_model.forward_from_embed(
-                batch.embeddings
+                embedded_prompt, prompt_attention_mask
             ).logits[:, -1:, :]
-            one_hot_next_token = gumbel_softmax(logits_next)
-            target_logits.append(logits_next)
-            one_hot_embedded = self.embedding_model.embed(
-                one_hot_next_token, onehot=True
-            ).squeeze(0)
-            batch.embeddings = torch.cat([batch.embeddings, one_hot_embedded], dim=1)
+            # logits_next is shape (batch, vocab_size)
+            next_token_probs = gen_gumbel_softmax(logits_next)
+            # target_logits.append(logits_next)
+            # one_hot_embedded = self.embedding_model.embed(
+            #     next_token_probs, onehot=True
+            # ).squeeze(0)
+
+            # embedded_prompt = torch.cat([embedded_prompt, one_hot_embedded], dim=1)
+            embedded_prompt, prompt_attention_mask = self.embedding_model.embed_nice(
+                (embedded_prompt, prompt_attention_mask), next_token_probs
+            )
+
+            reward_embeddings = self.reward_model.embedding_model.embed_nice(
+                (reward_embeddings, prompt_attention_mask), next_token_probs
+            )
+
             one_hot_reward_embedded = self.reward_model.embedding_model.embed(
                 one_hot_next_token, onehot=True
             ).squeeze(0)

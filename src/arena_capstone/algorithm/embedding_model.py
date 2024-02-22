@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
-
+import einops
 import torch
 from transformers import AutoModelForCausalLM, PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
@@ -29,6 +29,13 @@ class TokensBatch:
     tokens: Int[Tensor, "batch seq"]
     logits: Optional[Float[Tensor, "batch seq vocab"]]
     target_bounds: Optional[Tuple[Int]]
+
+
+SeqChunkType = Union[
+    Int[Tensor, "batch seq"],
+    Float[Tensor, "batch seq d_vocab"],
+    Float[Tensor, "batch seq d_model"],
+]
 
 
 class EmbeddingFriendlyModel:
@@ -79,8 +86,103 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
             we = wte(tokens_or_onehot)
         return we.unsqueeze(0).bfloat16()
 
-    def forward_from_embed(self, embed):
-        return self.model(inputs_embeds=embed)
+    def forward_from_embed(self, embed, attention_mask=None):
+        if attention_mask is None:
+            return self.model(inputs_embeds=embed)
+        else:
+            return self.model(inputs_embeds=embed, attention_mask=attention_mask)
+
+    def embed_nice(
+        self,
+        *sequence_chunks: Union[
+            SeqChunkType,
+            Tuple[
+                SeqChunkType,
+                Bool[Tensor, "batch seq"],
+            ],
+        ]
+    ):
+        """
+        sequence_chunks: *Union[
+            Int[Tensor, "batch seq"],
+            Float[Tensor, "batch seq d_vocab"],
+            Float[Tensor, "batch seq d_model"],
+            Tuple[
+                Union[
+                    Int[Tensor, "batch seq"],
+                    Float[Tensor, "batch seq d_vocab"],
+                    Float[Tensor, "batch seq d_model"]
+
+                ],
+                Bool[Tensor, "batch seq"]
+            ]
+        ]
+
+        chunks are tokens, onehot probs, or embeddings
+
+        the sequence chunks to embed
+
+        returns: Float[Tensor, "batch sequence_length d_model"]
+                the embedded sequence
+        """
+        batch_sizes = [
+            chunk.shape[0] if isinstance(chunk, torch.Tensor) else chunk[0].shape[0]
+            for chunk in sequence_chunks
+        ]
+        batch = max(batch_sizes)
+        assert all([size in (1, batch) for size in batch_sizes])
+        d_model = self.model.config.hidden_size
+        d_vocab = self.model.config.vocab_size
+
+        def expand_embed(t):
+            assert t.dtype not in (torch.int32, torch.int16)
+            if t.dtype in (torch.int64, torch.bool):
+                if t.ndim == 1:
+                    t = t.unsqueeze(0)
+            else:
+                assert t.shape[-1] in (d_model, d_vocab)
+                if t.ndim == 2:
+                    t = t.unsqueeze(0)
+            if t.shape[0] == 1:
+                t = einops.repeat(t, "1 ... -> b ...", b=batch)
+            assert t.shape[0] == batch
+            if t.dtype == torch.bool:
+                return t
+            if t.dtype == torch.int64:
+                return self.embed(t)
+            if t.shape[-1] == d_vocab:
+                assert torch.all(t >= 0) and torch.sum(t) < 2
+                return self.embed(t, onehot=True)
+            if t.shape[-1] == d_model:
+                return t
+            raise ValueError(
+                "bad vector passed to expand_embed! {t.dtype}, after expand: {t.shape}"
+            )
+
+        seql = []
+        maskl = []
+        for item in sequence_chunks:
+            if isinstance(item, tuple):
+                chunk, mask = item
+                if chunk.dtype == torch.bool:
+                    chunk, mask = mask, chunk
+                chunk, mask = expand_embed(chunk), expand_embed(mask)
+            else:
+                chunk = expand_embed(item)
+                mask = torch.ones(
+                    chunk.shape[:2], dtype=torch.bool, device=chunk.device
+                )
+
+            assert chunk.shape[:2] == mask.shape
+            assert chunk.shape[-1] == d_model
+            assert mask.dtype == torch.bool and chunk.dtype != torch.bool
+
+            seql.append(chunk)
+            maskl.append(mask)
+
+        sequence = torch.cat(seql, dim=1)
+        mask = torch.cat(maskl, dim=1)
+        return sequence, mask
 
     def splice_embedded_batch(
         self,

@@ -14,3 +14,4 @@ wandb
 colorama
 sentencepiece
 datasets
+nqgl-mlutils @ git+https://github.com/nqgl/mlutils

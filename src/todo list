@@ -1,0 +1,15 @@
+
+gpt2
+gbrt - gumbel softmax
+pgd gcg (minor)
+grad acc
+intensive testing (post-suffix)
+probabilistic replace for topk
+
+
+
+investigate why does random work?
+
+alternate approaches (kind of back ups?):
+    do gcg to generate bad things then run upo to produce them
+

@@ -9,11 +9,36 @@ from arena_capstone.algorithm.gcg import GCG, GCGConfig
 from arena_capstone.algorithm.upo import UPO, UPOConfig
 
 # from nqgl.mlutils.time_gpu import ProfileFunc, timedfunc_wrapper
-
-
-model_str = "ethz-spylab/poisoned_generation_trojan1"
+from pathlib import Path
 
 token = os.getenv("HF_TOKEN")
+
+
+llama_bf16_path = Path("/workspace/llama_bf16.pt")
+model_str = "ethz-spylab/poisoned_generation_trojan1"
+
+
+def load_from_pt(model_str):
+    model_str_in_path = model_str.replace("/", "-")
+    llama_bf16_path = Path(f"/workspace/{model_str_in_path}llama_bf16.pt")
+    if llama_bf16_path.exists():
+        # state = torch.load(llama_bf16_path)
+        llamamodel = LlamaForCausalLM.from_pretrained(llama_bf16_path)
+        print("Loaded Llama model from workspace")
+        print(llamamodel.dtype)
+        assert llamamodel.dtype == torch.bfloat16
+        # return LlamaForCausalLM._load_from_state_dict(state)
+        print("dev", llamamodel.device)
+        return llamamodel.cuda().eval()
+    print("Downloading Llama model to workspace")
+    llamamodel = (
+        LlamaForCausalLM.from_pretrained(model_str, token=token)
+        .bfloat16()
+        .eval()
+        .cuda()
+    )
+    llamamodel.save_pretrained(llama_bf16_path)
+    return llamamodel
 
 
 def get_llama(model_str="ethz-spylab/poisoned_generation_trojan1", device="cuda"):
@@ -27,13 +52,13 @@ def get_llama(model_str="ethz-spylab/poisoned_generation_trojan1", device="cuda"
     Returns:
     - Tuple containing the Llama model, embedding-friendly model, and corresponding tokenizer.
     """
-
-    llamamodel: LlamaForCausalLM = (
-        LlamaForCausalLM.from_pretrained(model_str, token=token)
-        .bfloat16()
-        .eval()
-        .to(device)
-    )
+    llamamodel = load_from_pt(model_str)
+    # llamamodel: LlamaForCausalLM = (
+    #     LlamaForCausalLM.from_pretrained(model_str, token=token)
+    #     .bfloat16()
+    #     .eval()
+    #     .to(device)
+    # )
     print("done importing llama")
 
     tokenizer = LlamaTokenizer.from_pretrained(model_str, token=token)
@@ -100,12 +125,25 @@ def do_upo(device):
     post_suffix_str = "ASSISTANT: "
     post_suffix = tokenizer(post_suffix_str, return_tensors="pt").input_ids
     post_suffix = post_suffix.squeeze().to(device)
-    # remove bos <s> token: 
+    # remove bos <s> token:
     post_suffix = post_suffix[1:]
 
     init_suffix = torch.randint(0, llamamodel.config.vocab_size, (12,), device=device)
 
-    init_suffix_list = [23494,11850,450,10729,28105,18880,13791,22893,22550,29256,20256,28360]
+    init_suffix_list = [
+        23494,
+        11850,
+        450,
+        10729,
+        28105,
+        18880,
+        13791,
+        22893,
+        22550,
+        29256,
+        20256,
+        28360,
+    ]
 
     init_suffix = torch.tensor(init_suffix_list, device=device, dtype=torch.long)
 
