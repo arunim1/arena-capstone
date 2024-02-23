@@ -8,7 +8,7 @@ from transformers import AutoModelForCausalLM, PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast
 import torch.nn.functional as F
 from jaxtyping import Float, Int, Bool
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, Any
 from torch import Tensor
 from transformers import AutoModelForCausalLM, PreTrainedModel
 
@@ -38,7 +38,16 @@ SeqChunkType = Union[
 ]
 
 
+@dataclass
+class MaskedChunk:
+    mask: Bool[Tensor, "batch seq"]
+    seq: SeqChunkType
+    model: Optional["Model"] = None
+
+
 class EmbeddingFriendlyModel:
+    model: Union[PreTrainedModel, torch.nn.Module]
+
     def embed(self, tokens):
         pass
 
@@ -72,8 +81,9 @@ class EmbeddingFriendlyModel:
 class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
     def __init__(self, model: PreTrainedModel):
         self.model = model
+        assert model.config.hidden_size != model.config.vocab_size
 
-    def embed(self, tokens_or_onehot, start_position=0, onehot=False):
+    def embed(self, tokens_or_onehot, batched=False, start_position=0, onehot=False):
         if hasattr(self.model, "transformer"):
             # GPT2
             wte = self.model.transformer.wte
@@ -84,24 +94,31 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
             we = tokens_or_onehot @ wte.weight
         else:
             we = wte(tokens_or_onehot)
-        return we.unsqueeze(0).bfloat16()
+        if batched:
+            return we
+        return we.unsqueeze(0)
 
     def forward_from_embed(self, embed, attention_mask=None):
+        if isinstance(embed, MaskedChunk):
+            assert self.model == embed.model
+            attention_mask = embed.mask
+            embed = embed.seq
         if attention_mask is None:
             return self.model(inputs_embeds=embed)
         else:
             return self.model(inputs_embeds=embed, attention_mask=attention_mask)
 
-    def embed_nice(
+    def embed_seqchunks(
         self,
         *sequence_chunks: Union[
             SeqChunkType,
+            MaskedChunk,
             Tuple[
                 SeqChunkType,
                 Bool[Tensor, "batch seq"],
             ],
-        ]
-    ):
+        ],
+    ) -> MaskedChunk:
         """
         sequence_chunks: *Union[
             Int[Tensor, "batch seq"],
@@ -126,13 +143,21 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
                 the embedded sequence
         """
         batch_sizes = [
-            chunk.shape[0] if isinstance(chunk, torch.Tensor) else chunk[0].shape[0]
+            (
+                chunk.shape[0]
+                if isinstance(chunk, torch.Tensor)
+                else max(chunk.seq.shape[0], chunk.mask.shape[0])
+            )
             for chunk in sequence_chunks
         ]
+        print(batch_sizes)
         batch = max(batch_sizes)
-        assert all([size in (1, batch) for size in batch_sizes])
+        assert all([size in (1, batch) for size in batch_sizes]), batch_sizes
         d_model = self.model.config.hidden_size
         d_vocab = self.model.config.vocab_size
+
+        def is_embed(t):
+            return t.shape[-1] == d_model and t.dtype not in (torch.bool, torch.int64)
 
         def expand_embed(t):
             assert t.dtype not in (torch.int32, torch.int16)
@@ -149,10 +174,13 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
             if t.dtype == torch.bool:
                 return t
             if t.dtype == torch.int64:
-                return self.embed(t)
+                return self.embed(t, batched=True)
             if t.shape[-1] == d_vocab:
-                assert torch.all(t >= 0) and torch.sum(t) < 2
-                return self.embed(t, onehot=True)
+                assert torch.all(t >= 0) and (t.sum(dim=-1) < 2).all(), (
+                    torch.all(t >= 0),
+                    torch.sum(t),
+                )
+                return self.embed(t, onehot=True, batched=True)
             if t.shape[-1] == d_model:
                 return t
             raise ValueError(
@@ -166,23 +194,32 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
                 chunk, mask = item
                 if chunk.dtype == torch.bool:
                     chunk, mask = mask, chunk
-                chunk, mask = expand_embed(chunk), expand_embed(mask)
-            else:
-                chunk = expand_embed(item)
+            elif isinstance(item, torch.Tensor):
+                chunk = item
                 mask = torch.ones(
                     chunk.shape[:2], dtype=torch.bool, device=chunk.device
                 )
+            if isinstance(item, MaskedChunk):
+                chunk, mask = item.seq, item.mask
+                assert (not is_embed(chunk)) or item.model is self.model
+            else:
+                assert not is_embed(chunk)
 
-            assert chunk.shape[:2] == mask.shape
-            assert chunk.shape[-1] == d_model
-            assert mask.dtype == torch.bool and chunk.dtype != torch.bool
+            assert mask.dtype == torch.bool and chunk.dtype != torch.bool, (
+                mask.dtype,
+                chunk.dtype,
+            )
+            chunk, mask = expand_embed(chunk), expand_embed(mask)
+            assert chunk.shape[:2] == mask.shape, (chunk.shape, mask.shape)
+            assert chunk.shape[-1] == d_model, (chunk.shape, mask.shape)
 
             seql.append(chunk)
             maskl.append(mask)
 
         sequence = torch.cat(seql, dim=1)
         mask = torch.cat(maskl, dim=1)
-        return sequence, mask
+        seqchunk = MaskedChunk(seq=sequence, mask=mask, model=self.model)
+        return seqchunk
 
     def splice_embedded_batch(
         self,

@@ -18,25 +18,20 @@ llama_bf16_path = Path("/workspace/llama_bf16.pt")
 model_str = "ethz-spylab/poisoned_generation_trojan1"
 
 
-def load_from_pt(model_str):
+def load_from_pt(cls, model_str):
     model_str_in_path = model_str.replace("/", "-")
     llama_bf16_path = Path(f"/workspace/{model_str_in_path}llama_bf16.pt")
     if llama_bf16_path.exists():
         # state = torch.load(llama_bf16_path)
-        llamamodel = LlamaForCausalLM.from_pretrained(llama_bf16_path)
+        llamamodel = cls.from_pretrained(llama_bf16_path)
         print("Loaded Llama model from workspace")
         print(llamamodel.dtype)
         assert llamamodel.dtype == torch.bfloat16
-        # return LlamaForCausalLM._load_from_state_dict(state)
+        # return cls._load_from_state_dict(state)
         print("dev", llamamodel.device)
         return llamamodel.cuda().eval()
     print("Downloading Llama model to workspace")
-    llamamodel = (
-        LlamaForCausalLM.from_pretrained(model_str, token=token)
-        .bfloat16()
-        .eval()
-        .cuda()
-    )
+    llamamodel = cls.from_pretrained(model_str, token=token).bfloat16().eval().cuda()
     llamamodel.save_pretrained(llama_bf16_path)
     return llamamodel
 
@@ -52,7 +47,7 @@ def get_llama(model_str="ethz-spylab/poisoned_generation_trojan1", device="cuda"
     Returns:
     - Tuple containing the Llama model, embedding-friendly model, and corresponding tokenizer.
     """
-    llamamodel = load_from_pt(model_str)
+    llamamodel = load_from_pt(LlamaForCausalLM, model_str)
     # llamamodel: LlamaForCausalLM = (
     #     LlamaForCausalLM.from_pretrained(model_str, token=token)
     #     .bfloat16()

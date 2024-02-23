@@ -21,13 +21,13 @@ from torch import Tensor
 class RewardGenerator(RewardModel):
     def __init__(self, *args, softmax=F.softmax, **kwargs):
         super().__init__(*args, **kwargs)
-        self.embedding_model = EmbeddingFriendlyForCausalLM(self.model)
+        self.embedding_model = EmbeddingFriendlyForCausalLM(self)
         self.softmax = softmax
 
-    def forward(  # pylint: disable=too-many-arguments
+    def forward(  # pylint: disable=too-many-argument
         self,
         attention_mask: torch.Tensor,
-        input_ids: torch.LongTensor,
+        input_ids: torch.LongTensor = None,
         position_ids: torch.LongTensor = None,
         past_key_values: list[torch.FloatTensor] = None,
         inputs_embeds: torch.FloatTensor = None,
@@ -484,10 +484,8 @@ def get_reward_generator(
     Returns:
     - reward_model: The loaded and initialized reward model ready for generating rewards.
     """
-    token = os.environ.get("HF_TOKEN")
+    from arena_capstone.scripts.run_with_llama import load_from_pt
 
     print("Loading reward model")
-    reward_model = (
-        RewardGenerator.from_pretrained(model_path, token=token).eval().to(device)
-    )
+    reward_model = load_from_pt(RewardGenerator, model_path)
     return reward_model

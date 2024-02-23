@@ -14,20 +14,21 @@ def gumbel_softmax(
     tau_backward: float = None,
     hard: bool = False,
     noise_scale: float = 1,
+    dim: int = -1,
 ):
     # tau_backward = tau_backward or tau
     gumbels = (
         -torch.empty_like(logits).exponential_().log() * noise_scale
     )  # ~Gumbel(0,1)
 
-    input_gumbels = (logits / noise_scale + gumbels) / tau  # ~Gumbel(logits,tau)
+    input_gumbels = (logits + gumbels * noise_scale) / tau  # ~Gumbel(logits,tau)
 
-    y_soft = F.softmax(input_gumbels, dim=-1)
+    y_soft = F.softmax(input_gumbels, dim=dim)
     if hard:
         y_hard = y_soft.max(-1, keepdim=True)[0].eq(y_soft).float()
         return y_hard - y_soft.detach() + y_soft
     if not tau_backward:
         return y_soft
-    input_gumbels_bak = (logits / noise_scale + gumbels) / tau_backward
-    y_soft_bak = F.softmax(input_gumbels_bak, dim=-1)
+    input_gumbels_bak = (logits + gumbels * noise_scale) / tau_backward
+    y_soft_bak = F.softmax(input_gumbels_bak, dim=dim)
     return y_soft.detach() + y_soft_bak - y_soft_bak.detach()
