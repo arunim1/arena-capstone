@@ -7,8 +7,8 @@ import transformers
 import arena_capstone.scripts.llamatokenize as llamatokenize
 
 from dataclasses import dataclass, field
-from typing import List, Optional, Set, Tuple, Union
-from arena_capstone.rewards.gumbel_softmax import gumbel_softmax
+from typing import List, Optional, Set, Union
+from arena_capstone.soft_suffix.gumbel_softmax import GumbelSoftmaxConfig
 import pandas as pd
 import torch
 import wandb
@@ -16,8 +16,6 @@ from colorama import Back, Fore, Style
 from jaxtyping import Bool, Float, Int
 from torch import Tensor, embedding
 from tqdm import tqdm
-import torch.nn.functional as F
-import torch.nn as nn
 
 import time
 
@@ -42,56 +40,17 @@ from arena_capstone.algorithm.embedding_model import (
     MaskedChunk,
     EmbeddedBatch,
 )
-import arena_capstone.algorithm.topk_gradients as topkgrad
-from arena_capstone.algorithm.gcg import GCGConfig
 from arena_capstone.algorithm.token_gradients import TokenGradients
 from arena_capstone.rewards.dataset_preprocess import proc_data
+from arena_capstone.soft_suffix.optim import OptimCfg
+from arena_capstone.soft_suffix.sched_config import SchedConfig
+from arena_capstone.soft_suffix.suffix import Suffix, SuffixConfig
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def isinfnan(t):
-    return torch.any(torch.isnan(t) | torch.isinf(t))
-
-
-class Config:
-    pass
-
-    def update_config_and_log(self, cfgname, d: dict, run_num: int):
-        for k, v in d.items():
-            setattr(self, k, v)
-        wandb.log({f"{cfgname}/{k}": v for k, v in d.items()}, step=run_num)
-
-    def scheduler_step(self, run_num, name="cfg", **kwargs):
-        for attrname in dir(self):
-            if attrname.startswith("_"):
-                continue
-            attr = getattr(self, attrname)
-            if hasattr(attr, "schedule"):
-                attr.update_config_and_log(
-                    f"{name}.{attrname}", attr.schedule(run_num, **kwargs), run_num
-                )
-            if isinstance(attr, Config):
-                attr.scheduler_step(run_num, f"{name}.{attrname}", **kwargs)
-
-
-# def update_config_and_log(cfg, cfgname, d: dict):
-#     for k, v in d.items():
-#         setattr(cfg, k, v)
-#     wandb.log({f"{cfgname}.{k}": v for k, v in d.items()})
-
-
-# def schedule(cfg, name=""):
-#     for attrname in cfg.__annotations__.keys():
-#         attr = getattr(cfg, attrname)
-#         if hasattr(attr, "schedule"):
-#             update_config_and_log(attr, f"{name}.{attr}", attr.schedule())
-#         if isinstance(attr, Config):
-#             schedule(attr, f"{name}.{attr}")
-
-
 @dataclass
-class SoftOptPromptConfig(Config):
+class SoftOptPromptConfig(SchedConfig):
     suffix: Int[Tensor, "batch seq"]
     post_suffix: Int[Tensor, "batch seq"]
     batch_size: int
@@ -105,177 +64,6 @@ class SoftOptPromptConfig(Config):
     beta2: float = 0.99
     do_print: bool = True
     generate_length: int = 6
-
-
-@dataclass
-class OptimCfg(Config):
-    optim: str = "RAdam"
-    lr: float = 3e-1
-    betas: Tuple[float, float] = (0.9, 0.99)
-    momentum: float = 0.9
-    weight_decay: float = 0
-    eps: float = 1e-8
-
-    def get(self, params):
-        if self.optim == "RAdam":
-            return torch.optim.RAdam(
-                params,
-                lr=self.lr,
-                betas=self.betas,
-                weight_decay=self.weight_decay,
-                eps=self.eps,
-            )
-        if self.optim == "SGD":
-            return torch.optim.SGD(
-                params,
-                lr=self.lr,
-                momentum=self.momentum,
-                weight_decay=self.weight_decay,
-            )
-        else:
-            raise ValueError(f"Unknown optimizer {self.optim}")
-
-
-@dataclass
-class GumbelSoftmaxConfig(Config):
-    tau: float = 1
-    hard: bool = False
-    tau_backward: float = None
-    noise_scale: float = 1
-    bad_words_ids: Optional[Tuple[int]] = (1, 2, 32_000)  # TODO check this
-    min_tau: Optional[float] = 0.01
-    tau_annealing_rate: Optional[float] = 0.95
-    harden_range: Optional[Tuple[int, int]] = None
-    noise_in_hard: float = 0
-    tau_hard: float = None
-    temp_tau_soft: float = None
-    temp_noise: float = None
-    scale_noise: bool = False
-    max_scaled_noise: float = 1
-    max_tau: float = 20
-    noise_annealing: float = 0.99
-
-    def gumbel_softmax(self, logits, tau=None, noise_scale=None, hard=None):
-        if self.bad_words_ids is not None:
-            logit_mask = torch.zeros(logits.shape[-1], device=logits.device)
-            logit_mask[torch.tensor(self.bad_words_ids, dtype=torch.int64)] = torch.inf
-            logits = logits - logit_mask
-        return gumbel_softmax(
-            logits,
-            tau=tau or self.tau,
-            hard=hard if hard is not None else self.hard,
-            tau_backward=self.tau_backward,
-            noise_scale=noise_scale
-            or (
-                self.noise_scale
-                if not self.scale_noise
-                else min(self.noise_scale * self.tau, self.max_scaled_noise)
-            ),
-            dim=-1,
-        )
-
-    def __post_init__(self):
-        self.temp_tau_soft = self.temp_tau_soft or self.tau
-        self.temp_noise = self.noise_scale
-
-    def schedule(self, run_num: int, **kwargs) -> dict:
-        d = {}
-        d["hard"] = self.harden_range is None or (
-            self.harden_range[1] - self.harden_range[0]
-        ) <= (run_num % self.harden_range[1])
-
-        d["noise_scale"] = self.noise_scale * self.noise_annealing
-        if d["hard"]:
-            if self.noise_in_hard is not None:
-                d["noise_scale"] = self.noise_in_hard
-            d["tau"] = self.tau_hard or self.tau
-
-        else:
-            if self.noise_in_hard is not None:
-                d["noise_scale"] = self.temp_noise
-            loss = kwargs["loss"]
-            if loss < -4.5:
-                d["temp_tau_soft"] = min(
-                    self.max_tau,
-                    max(self.min_tau, self.temp_tau_soft * self.tau_annealing_rate),
-                )
-            else:
-                d["temp_tau_soft"] = min(
-                    self.max_tau,
-                    max(self.min_tau, self.temp_tau_soft / (self.tau_annealing_rate)),
-                )
-            d["tau"] = d["temp_tau_soft"]
-
-        # if self.tau < 4:
-        #     d["tau_backward"] = 2 + self.tau / 2
-        return d
-
-
-@dataclass
-class SuffixConfig(Config):
-    gumbel_config: GumbelSoftmaxConfig
-    suffix_len: int = 5
-
-
-DEBUG = False
-
-
-def dprint(*args, **kwargs):
-    if DEBUG:
-        print(*args, **kwargs)
-
-
-class Suffix(nn.Module):
-    def __init__(
-        self,
-        cfg: SuffixConfig,
-        suffix_logits=None,
-    ):
-        super().__init__()
-        if suffix_logits is None:
-            suffix_logits = torch.zeros(1, cfg.suffix_len, 32001, device=DEVICE)
-        else:
-            if suffix_logits.ndim == 2:
-                suffix_logits = suffix_logits.unsqueeze(0)
-        self.suffix_logits = nn.Parameter(suffix_logits.clone())
-        self.tau = cfg.gumbel_config.tau
-        self.tau_backward = cfg.gumbel_config.tau_backward
-        self.hard = cfg.gumbel_config.hard
-        self.noise_scale = cfg.gumbel_config.noise_scale
-        self.cfg = cfg
-
-    def forward(self, batch_size, tau=None) -> Tensor:
-        return self.cfg.gumbel_config.gumbel_softmax(
-            self.suffix_logits.expand(batch_size, -1, -1), tau=tau
-        )
-
-    def log_historgram(self, run_num: int):
-        suffix = self(1)
-        suffix_softmax = F.softmax(self.suffix_logits, dim=-1)
-        suffix_softmax = self.cfg.gumbel_config.gumbel_softmax(
-            self.suffix_logits, noise_scale=0, hard=False
-        )
-
-        for i in range(suffix.shape[1]):
-            max_probs_g = torch.max(suffix[:, i, :], dim=-1)
-            max_probs = torch.max(suffix_softmax[:, i, :], dim=-1)
-            mean_max_g = max_probs_g.values.mean()
-            mean_max_sm = max_probs.values.mean()
-            std_max_g = max_probs_g.values.std()
-            wandb.log(
-                {
-                    f"suffix/probs/hists/gumbel/{i}": wandb.Histogram(
-                        suffix[:, i, :].float().detach().cpu().numpy()
-                    ),
-                    f"suffix/probs/hists/softmax/{i}": wandb.Histogram(
-                        suffix_softmax[:, i, :].float().detach().cpu().numpy()
-                    ),
-                    f"suffix/probs/max/means/gumbel/{i}": mean_max_g,
-                    f"suffix/probs/max/means/softmax/{i}": mean_max_sm,
-                    # f"suffix/maxprob/sts/gumbel/{i}": std_max_g,
-                },
-                step=run_num,
-            )
 
 
 class SoftOptPrompt:
@@ -465,7 +253,7 @@ class SoftOptPrompt:
             self.suffix.parameters(),
             lr=3e0,
             betas=(self.cfg.beta1, self.cfg.beta2),
-            weight_decay=0.1,
+            weight_decay=0.001,
         )
         # optim = torch.optim.SGD(self.suffix.parameters(), lr=1e2, momentum=0.0)
 
@@ -597,10 +385,10 @@ def main():
             noise_scale=7,
             min_tau=0.001,
             tau_annealing_rate=1,
-            harden_range=(200, 250),
+            harden_range=(200, 400),
             noise_in_hard=None,
             noise_annealing=0.999,
-            tau_hard=math.e**math.pi**2,
+            tau_hard=math.e**math.pi,
             scale_noise=False,
             max_scaled_noise=10,
         ),
@@ -634,7 +422,7 @@ def main():
         T=4000,
         use_wandb=True,
         generate_length=6,
-        beta1=0.9,
+        beta1=0.5,
         beta2=0.99,
         optim=None,
     )
