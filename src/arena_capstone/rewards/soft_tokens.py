@@ -6,7 +6,7 @@ from numpy import pad
 import transformers
 import arena_capstone.scripts.llamatokenize as llamatokenize
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Set, Tuple, Union
 from arena_capstone.rewards.gumbel_softmax import gumbel_softmax
 import pandas as pd
@@ -19,6 +19,7 @@ from tqdm import tqdm
 import torch.nn.functional as F
 import torch.nn as nn
 
+import time
 
 from transformers import (
     AutoModelForCausalLM,
@@ -53,36 +54,61 @@ def isinfnan(t):
     return torch.any(torch.isnan(t) | torch.isinf(t))
 
 
+class Config:
+    pass
+
+    def update_config_and_log(self, cfgname, d: dict, run_num: int):
+        for k, v in d.items():
+            setattr(self, k, v)
+        wandb.log({f"{cfgname}/{k}": v for k, v in d.items()}, step=run_num)
+
+    def scheduler_step(self, run_num, name="cfg", **kwargs):
+        for attrname in dir(self):
+            if attrname.startswith("_"):
+                continue
+            attr = getattr(self, attrname)
+            if hasattr(attr, "schedule"):
+                attr.update_config_and_log(
+                    f"{name}.{attrname}", attr.schedule(run_num, **kwargs), run_num
+                )
+            if isinstance(attr, Config):
+                attr.scheduler_step(run_num, f"{name}.{attrname}", **kwargs)
+
+
+# def update_config_and_log(cfg, cfgname, d: dict):
+#     for k, v in d.items():
+#         setattr(cfg, k, v)
+#     wandb.log({f"{cfgname}.{k}": v for k, v in d.items()})
+
+
+# def schedule(cfg, name=""):
+#     for attrname in cfg.__annotations__.keys():
+#         attr = getattr(cfg, attrname)
+#         if hasattr(attr, "schedule"):
+#             update_config_and_log(attr, f"{name}.{attr}", attr.schedule())
+#         if isinstance(attr, Config):
+#             schedule(attr, f"{name}.{attr}")
+
+
 @dataclass
-class SoftOptPromptConfig:
-    prefixes: List[Int[Tensor, "prefix_lens"]]
+class SoftOptPromptConfig(Config):
     suffix: Int[Tensor, "batch seq"]
     post_suffix: Int[Tensor, "batch seq"]
-    # k: int
     batch_size: int
     suffix_config: "SuffixConfig"
     generate_gumbel_config: "GumbelSoftmaxConfig"
-    # threshold: float = 1
     optim: "OptimCfg"
     T: int = 1000
     device: str = DEVICE
     use_wandb: bool = True
-    generate_length: int = 32
-    # use_end_reward_selecting: bool = False
-    # use_end_reward_gradients: bool = False
-    # generate_targets_at_run_num: int = False
-    num_prompts: int = 1
-    # m_c_start: int = 1
-    # print_text: bool = True
-    # eos_penalty_grad: float = 1
-    # temperature: float = 0.0402107123903543
-    beta1: float = 0.9
+    beta1: float = 0.91
     beta2: float = 0.99
     do_print: bool = True
+    generate_length: int = 6
 
 
 @dataclass
-class OptimCfg:
+class OptimCfg(Config):
     optim: str = "RAdam"
     lr: float = 3e-1
     betas: Tuple[float, float] = (0.9, 0.99)
@@ -109,55 +135,84 @@ class OptimCfg:
         else:
             raise ValueError(f"Unknown optimizer {self.optim}")
 
-    def log(self, parent_name):
-        return wandb.log(
-            {
-                f"{parent_name}.lr": self.lr,
-                f"{parent_name}.betas": self.betas,
-                f"{parent_name}.momentum": self.momentum,
-                f"{parent_name}.weight_decay": self.weight_decay,
-                f"{parent_name}.eps": self.eps,
-            }
-        )
-
 
 @dataclass
-class GumbelSoftmaxConfig:
+class GumbelSoftmaxConfig(Config):
     tau: float = 1
     hard: bool = False
     tau_backward: float = None
     noise_scale: float = 1
+    bad_words_ids: Optional[Tuple[int]] = (1, 2, 32_000)  # TODO check this
+    min_tau: Optional[float] = 0.01
+    tau_annealing_rate: Optional[float] = 0.95
+    harden_range: Optional[Tuple[int, int]] = None
+    noise_in_hard: float = 0
+    tau_hard: float = None
+    temp_tau_soft: float = None
+    temp_noise: float = None
+    scale_noise: bool = False
+    max_scaled_noise: float = 1
+    max_tau: float = 20
+    noise_annealing: float = 0.99
 
-    def gumbel_softmax(self, logits, tau=None):
+    def gumbel_softmax(self, logits, tau=None, noise_scale=None, hard=None):
+        if self.bad_words_ids is not None:
+            logit_mask = torch.zeros(logits.shape[-1], device=logits.device)
+            logit_mask[torch.tensor(self.bad_words_ids, dtype=torch.int64)] = torch.inf
+            logits = logits - logit_mask
         return gumbel_softmax(
             logits,
             tau=tau or self.tau,
-            hard=self.hard,
+            hard=hard if hard is not None else self.hard,
             tau_backward=self.tau_backward,
-            noise_scale=self.noise_scale,
+            noise_scale=noise_scale
+            or (
+                self.noise_scale
+                if not self.scale_noise
+                else min(self.noise_scale * self.tau, self.max_scaled_noise)
+            ),
             dim=-1,
         )
 
-    def update(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
+    def __post_init__(self):
+        self.temp_tau_soft = self.temp_tau_soft or self.tau
+        self.temp_noise = self.noise_scale
 
-    def updated(self, **kwargs):
-        return GumbelSoftmaxConfig(
-            **{k: v if v is not None else getattr(self, k) for k, v in kwargs.items()}
-        )
+    def schedule(self, run_num: int, **kwargs) -> dict:
+        d = {}
+        d["hard"] = self.harden_range is None or (
+            self.harden_range[1] - self.harden_range[0]
+        ) <= (run_num % self.harden_range[1])
 
-    def log(self, parent_name):
-        return wandb.log(
-            {
-                f"{parent_name}.{attr}": getattr(self, attr)
-                for attr in self.__annotations__
-            }
-        )
+        d["noise_scale"] = self.noise_scale * self.noise_annealing
+        if d["hard"]:
+            if self.noise_in_hard is not None:
+                d["noise_scale"] = self.noise_in_hard
+            d["tau"] = self.tau_hard or self.tau
+
+        else:
+            if self.noise_in_hard is not None:
+                d["noise_scale"] = self.temp_noise
+            loss = kwargs["loss"]
+            if loss < -4.5:
+                d["temp_tau_soft"] = min(
+                    self.max_tau,
+                    max(self.min_tau, self.temp_tau_soft * self.tau_annealing_rate),
+                )
+            else:
+                d["temp_tau_soft"] = min(
+                    self.max_tau,
+                    max(self.min_tau, self.temp_tau_soft / (self.tau_annealing_rate)),
+                )
+            d["tau"] = d["temp_tau_soft"]
+
+        # if self.tau < 4:
+        #     d["tau_backward"] = 2 + self.tau / 2
+        return d
 
 
 @dataclass
-class SuffixConfig:
+class SuffixConfig(Config):
     gumbel_config: GumbelSoftmaxConfig
     suffix_len: int = 5
 
@@ -189,22 +244,35 @@ class Suffix(nn.Module):
         self.noise_scale = cfg.gumbel_config.noise_scale
         self.cfg = cfg
 
-    def forward(self, tau=None) -> Tensor:
-        return self.cfg.gumbel_config.gumbel_softmax(self.suffix_logits, tau=tau)
+    def forward(self, batch_size, tau=None) -> Tensor:
+        return self.cfg.gumbel_config.gumbel_softmax(
+            self.suffix_logits.expand(batch_size, -1, -1), tau=tau
+        )
 
     def log_historgram(self, run_num: int):
-        suffix = self()
+        suffix = self(1)
         suffix_softmax = F.softmax(self.suffix_logits, dim=-1)
+        suffix_softmax = self.cfg.gumbel_config.gumbel_softmax(
+            self.suffix_logits, noise_scale=0, hard=False
+        )
 
         for i in range(suffix.shape[1]):
+            max_probs_g = torch.max(suffix[:, i, :], dim=-1)
+            max_probs = torch.max(suffix_softmax[:, i, :], dim=-1)
+            mean_max_g = max_probs_g.values.mean()
+            mean_max_sm = max_probs.values.mean()
+            std_max_g = max_probs_g.values.std()
             wandb.log(
                 {
-                    f"suffix_gumbel_hist_{i}": wandb.Histogram(
+                    f"suffix/probs/hists/gumbel/{i}": wandb.Histogram(
                         suffix[:, i, :].float().detach().cpu().numpy()
                     ),
-                    f"suffix_softmax_hist_{i}": wandb.Histogram(
+                    f"suffix/probs/hists/softmax/{i}": wandb.Histogram(
                         suffix_softmax[:, i, :].float().detach().cpu().numpy()
                     ),
+                    f"suffix/probs/max/means/gumbel/{i}": mean_max_g,
+                    f"suffix/probs/max/means/softmax/{i}": mean_max_sm,
+                    # f"suffix/maxprob/sts/gumbel/{i}": std_max_g,
                 },
                 step=run_num,
             )
@@ -234,7 +302,11 @@ class SoftOptPrompt:
             cfg.suffix_config,
             cfg.suffix,
         )
-
+        self.tau_zero_table = (
+            wandb.Table(columns=["prefix", "suffix", "completion", "step"])
+            if self.cfg.use_wandb
+            else None
+        )
         self.table = (
             wandb.Table(columns=["prefix", "suffix", "completion", "step"])
             if self.cfg.use_wandb
@@ -262,14 +334,14 @@ class SoftOptPrompt:
         #     self.suffix.parameters(), lr=3e-1, betas=(self.cfg.beta1, self.cfg.beta2)
         # )
         optim = optim or torch.optim.SGD(self.suffix.parameters(), lr=3e-1, momentum=0)
-        for run_num in tqdm(range(self.cfg.T)):
+        for run_num in tqdm(range(1, self.cfg.T + 1)):
             prefixes_seqchunk = self.get_next_prefixes()
             suffix = self.suffix()
-            prompt_seqchunk = self.embedding_model.embed_seqchunks(
+            prompt_seqchunk = self.embedding_model.embed_nice(
                 prefixes_seqchunk, suffix, self.cfg.post_suffix
             )
             generated_probs = self.generate_fn(prompt_seqchunk)
-            reward_seqchunk = self.reward_model.embedding_model.embed_seqchunks(
+            reward_seqchunk = self.reward_model.embedding_model.embed_nice(
                 prefixes_seqchunk, self.cfg.post_suffix, generated_probs
             )
             rewards = self.reward_model.embedding_model.forward_from_embed(
@@ -278,13 +350,14 @@ class SoftOptPrompt:
 
             loss = rewards.end_rewards.mean()  # possibly change to rewards.rewards
             loss.backward()
-            # printing gradient:
-            print("suffix grad", self.suffix.suffix_logits.grad)
-            wandb.log({"loss": loss.item()})
+            # # printing gradient:
+            # print("suffix grad", self.suffix.suffix_logits.grad)
+            wandb.log({"loss": loss.item()}, step=run_num)
             optim.step()
             optim.zero_grad()
+            self.cfg.scheduler_step(run_num)
             if run_num % 2 == 0:
-                self.log(run_num=run_num + 1)
+                self.log(run_num=run_num)
 
     def generate_fn(
         self,
@@ -304,7 +377,7 @@ class SoftOptPrompt:
             )
             output_probs.append(next_token_probs)
 
-            prompt_seqchunk = self.embedding_model.embed_seqchunks(
+            prompt_seqchunk = self.embedding_model.embed_nice(
                 prompt_seqchunk, next_token_probs
             )
 
@@ -342,8 +415,8 @@ class SoftOptPrompt:
 
     def generate_printable(self, tau=None):
         prefixes_seqchunk = self.cached_prefixes_seqchunk
-        suffix = self.suffix(tau=tau)
-        prompt_seqchunk = self.embedding_model.embed_seqchunks(
+        suffix = self.suffix(1, tau=tau)
+        prompt_seqchunk = self.embedding_model.embed_nice(
             prefixes_seqchunk, suffix, self.cfg.post_suffix
         )
         with torch.inference_mode():
@@ -362,60 +435,83 @@ class SoftOptPrompt:
 
     def log(self, run_num: int):
         if self.cfg.use_wandb:
-            self.suffix.log_historgram(run_num=run_num + 1)
+            self.suffix.log_historgram(run_num)
             prefixes, suffixes, completions = self.generate_printable()
             for prefix, suffix, completion in zip(prefixes, suffixes, completions):
                 self.table.add_data(
-                    prefix, suffix, completion, run_num + 1
+                    prefix, suffix, completion, run_num
                 )  # prefix, suffix, completion, step
                 if self.cfg.do_print:
-                    print(prefix, suffix, completion)
+                    print(
+                        f"tau {self.cfg.generate_gumbel_config.tau:.2f}",
+                        prefix,
+                        suffix,
+                        completion,
+                    )
+                    time.sleep(0.1)
+
+            prefixes, suffixes, completions = self.generate_printable(tau=1e-8)
+            for prefix, suffix, completion in zip(prefixes, suffixes, completions):
+                self.tau_zero_table.add_data(
+                    prefix, suffix, completion, run_num
+                )  # prefix, suffix, completion, step
+                if self.cfg.do_print:
+                    print("tau zero", prefix, suffix, completion)
+                    time.sleep(0.1)
 
     def suffix_only_train_test(self):
 
         optim = torch.optim.RAdam(
-            self.suffix.parameters(), lr=3e-1, betas=(self.cfg.beta1, self.cfg.beta2)
+            self.suffix.parameters(),
+            lr=3e0,
+            betas=(self.cfg.beta1, self.cfg.beta2),
+            weight_decay=0.1,
         )
-        # optim = torch.optim.SGD(self.suffix.parameters(), lr=3e1, momentum=0.9)
+        # optim = torch.optim.SGD(self.suffix.parameters(), lr=1e2, momentum=0.0)
 
         self.get_next_prefixes()
-        for run_num in tqdm(range(self.cfg.T)):
-            suffix = self.suffix()
-            reward_seqchunk = self.reward_model.embedding_model.embed_seqchunks(
+        for run_num in tqdm(range(1, self.cfg.T + 1)):
+            suffix = self.suffix(self.cfg.batch_size)
+            reward_seqchunk = self.reward_model.embedding_model.embed_nice(
+                torch.tensor(
+                    self.tokenizer.bos_token_id, device=DEVICE, dtype=torch.int64
+                ).unsqueeze(0),
                 suffix,
             )
             rewards = self.reward_model.embedding_model.forward_from_embed(
                 reward_seqchunk
             )
 
-            loss = rewards.end_rewards.mean()  # possibly change to rewards.rewards
+            # loss = rewards.end_rewards.mean()  # possibly change to rewards.rewards
+            loss = rewards.rewards.mean()
             loss.backward()
             # printing gradient:
-            print("suffix grad", self.suffix.suffix_logits.grad)
-            wandb.log({"loss": loss.item()})
+            # print("suffix grad", self.suffix.suffix_logits.grad)
+            wandb.log({"loss": loss.item()}, step=run_num)
             optim.step()
             optim.zero_grad()
-            if run_num % 2 == 0:
-                self.log(run_num=run_num + 1)
+            self.cfg.scheduler_step(run_num, loss=loss)
+            if run_num % 50 == 10:
+                self.log(run_num=run_num)
 
     def suffix_only_full_train(self, optim=None):  # GBRT paper setup, basically
 
         optim = optim or torch.optim.RAdam(
             self.suffix.parameters(),
-            lr=1e-2,
+            lr=3e-2,
             betas=(self.cfg.beta1, self.cfg.beta2),
-            weight_decay=0.01,
+            weight_decay=0.1,
         )
         self.get_next_prefixes()
         self.cached_prefixes_seqchunk = self.cached_prefixes_seqchunk[:, 0:0]
-        for run_num in tqdm(range(self.cfg.T)):
+        for run_num in tqdm(range(1, self.cfg.T + 1)):
             suffix = self.suffix()
-            prompt_seqchunk = self.embedding_model.embed_seqchunks(
+            prompt_seqchunk = self.embedding_model.embed_nice(
                 suffix,
             )
 
             generated_probs = self.generate_fn(prompt_seqchunk)
-            reward_seqchunk = self.reward_model.embedding_model.embed_seqchunks(
+            reward_seqchunk = self.reward_model.embedding_model.embed_nice(
                 generated_probs
             )
 
@@ -426,29 +522,31 @@ class SoftOptPrompt:
             loss = rewards.end_rewards.mean()  # possibly change to rewards.rewards
             # loss = rewards.reward.mean()
             loss.backward()
+            self.cfg.scheduler_step(run_num)
+
             # printing gradient:
             print("suffix grad", self.suffix.suffix_logits.grad)
-            wandb.log({"loss": loss.item()})
+            wandb.log({"loss": loss.item()}, step=run_num)
             optim.step()
             optim.zero_grad()
-            if run_num % 2 == 0:
-                self.log(run_num=run_num + 1)
+            if run_num % 25 == 0:
+                self.log(run_num=run_num)
 
 
 def main():
     torch.set_default_dtype(torch.bfloat16)
 
-    num_prompts = 16
+    # num_prompts = 16
     model, embedding_model, tokenizer = get_llama()
 
-    harmful_behavior_data = pd.read_csv("./data/advbench/harmful_behaviors.csv")
-    harmful_behavior_data.head()
-    prefix_strs = harmful_behavior_data["goal"].tolist()[2 : 2 + num_prompts]
+    # harmful_behavior_data = pd.read_csv("./data/advbench/harmful_behaviors.csv")
+    # harmful_behavior_data.head()
+    # prefix_strs = harmful_behavior_data["goal"].tolist()[2 : 2 + num_prompts]
 
-    prefixes = [
-        torch.tensor(tokens, device=DEVICE, dtype=torch.long)
-        for tokens in tokenizer(prefix_strs).input_ids
-    ]
+    # prefixes = [
+    #     torch.tensor(tokens, device=DEVICE, dtype=torch.long)
+    #     for tokens in tokenizer(prefix_strs).input_ids
+    # ]
 
     reward_model: RewardGenerator = get_reward_generator()
 
@@ -456,22 +554,66 @@ def main():
     post_suffix = tokenizer(post_suffix_str, return_tensors="pt").input_ids
     post_suffix = post_suffix.squeeze().to(DEVICE)
     post_suffix = post_suffix[1:].unsqueeze(0)
+    # while True:
+    #     s2e = input("next:")
+    #     toks = tokenizer(
+    #         s2e,
+    #         return_tensors="pt",
+    #     )
+    #     print(
+    #         "bad reward:",
+    #         reward_model(
+    #             input_ids=toks.input_ids.to(DEVICE),
+    #             attention_mask=toks.attention_mask.to(DEVICE),
+    #         ),
+    #     )
+
+    # GBRT paper hyperparams
+    import math
+
+    # suffix_config = SuffixConfig(
+    #     gumbel_config=GumbelSoftmaxConfig(
+    #         tau=2,
+    #         hard=False,
+    #         tau_backward=None,
+    #         noise_scale=1 / 7,
+    #         min_tau=0.001,
+    #         tau_annealing_rate=0.995,
+    #         harden_range=(10, 10),
+    #         noise_in_hard=5,
+    #         noise_annealing=0.99,
+    #         tau_hard=math.e**math.pi,
+    #         scale_noise=True,
+    #         max_scaled_noise=1,
+    #     ),
+    #     suffix_len=7,
+    # )
 
     suffix_config = SuffixConfig(
         gumbel_config=GumbelSoftmaxConfig(
-            tau=5,
+            tau=4,
             hard=False,
             tau_backward=None,
-            noise_scale=1.5,
+            noise_scale=7,
+            min_tau=0.001,
+            tau_annealing_rate=1,
+            harden_range=(200, 250),
+            noise_in_hard=None,
+            noise_annealing=0.999,
+            tau_hard=math.e**math.pi**2,
+            scale_noise=False,
+            max_scaled_noise=10,
         ),
-        suffix_len=5,
+        suffix_len=7,
     )
 
     generate_gumbel_config = GumbelSoftmaxConfig(
-        tau=10,
+        tau=100,
         hard=False,
         tau_backward=None,
         noise_scale=1,
+        min_tau=0.01,
+        tau_annealing_rate=0.995,
     )
 
     test_str = "concerns conflicts formally隆 Tell I I fightingages:@ yes"
@@ -486,16 +628,14 @@ def main():
     cfg = SoftOptPromptConfig(
         suffix=None,  # torch.randint(5, 1000, (6,), device=DEVICE),
         post_suffix=post_suffix,
-        batch_size=4,
-        prefixes=prefixes,
+        batch_size=64,
         suffix_config=suffix_config,
         generate_gumbel_config=generate_gumbel_config,
         T=4000,
         use_wandb=True,
         generate_length=6,
-        num_prompts=num_prompts,
         beta1=0.9,
-        beta2=0.998,
+        beta2=0.99,
         optim=None,
     )
 

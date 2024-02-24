@@ -108,7 +108,7 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         else:
             return self.model(inputs_embeds=embed, attention_mask=attention_mask)
 
-    def embed_seqchunks(
+    def embed_nice(
         self,
         *sequence_chunks: Union[
             SeqChunkType,
@@ -150,7 +150,6 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
             )
             for chunk in sequence_chunks
         ]
-        print(batch_sizes)
         batch = max(batch_sizes)
         assert all([size in (1, batch) for size in batch_sizes]), batch_sizes
         d_model = self.model.config.hidden_size
@@ -178,7 +177,9 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
             if t.shape[-1] == d_vocab:
                 assert torch.all(t >= 0) and (t.sum(dim=-1) < 2).all(), (
                     torch.all(t >= 0),
-                    torch.sum(t),
+                    torch.sum(t, dim=-1),
+                    t.shape,
+                    t.dtype,
                 )
                 return self.embed(t, onehot=True, batched=True)
             if t.shape[-1] == d_model:
