@@ -9,11 +9,16 @@ import wandb
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+from arena_capstone.soft_suffix.optim import OptimCfg
+
 
 @dataclass
 class SuffixConfig(SchedConfig):
+    optim: OptimCfg
     gumbel_config: GumbelSoftmaxConfig
     suffix_len: int = 5
+    iterative_freeze: bool = False
+    update_size_from_probs: float = 50
 
 
 class Suffix(nn.Module):
@@ -40,30 +45,65 @@ class Suffix(nn.Module):
             self.suffix_logits.expand(batch_size, -1, -1), tau=tau
         )
 
-    def log_historgram(self, run_num: int):
-        suffix = self(1)
-        suffix_softmax = F.softmax(self.suffix_logits, dim=-1)
-        suffix_softmax = self.cfg.gumbel_config.gumbel_softmax(
-            self.suffix_logits, noise_scale=0, hard=False
+    @property
+    def optim(self):
+        if self.cfg.optim.optim is None:
+            self.cfg.optim.init_optim(self.parameters())
+        return self.cfg.optim.optim
+
+    def log(self, run_num: int, loghists: bool = True, positional: bool = True):
+        dists = {
+            "logits": self.suffix_logits,
+            "gumbel": self(1),
+            "softmax": self.cfg.gumbel_config.gumbel_softmax(
+                self.suffix_logits, noise_scale=0, hard=False
+            ),
+        }
+        ops = {
+            "max": lambda x, dim: torch.max(x, dim=dim).values,
+            "mean": lambda x, dim: torch.mean(x, dim=dim),
+            "min": lambda x, dim: torch.min(x, dim=dim).values,
+            "median": lambda x, dim: torch.median(x.float(), dim=dim).values,
+        }
+        logdict = {
+            k: v
+            for pos in range(self.suffix_logits.shape[1])
+            for distname, dist in dists.items()
+            for k, v in {
+                **{
+                    f"suffix/probs/{distname}/{opname}/{pos}": op(
+                        dist[:, pos, :], dim=-1
+                    ).item()
+                    for opname, op in ops.items()
+                    if positional
+                },
+                **(
+                    {
+                        f"suffix/probs/hists/{pos}/{distname}": (
+                            wandb.Histogram(
+                                dist[:, pos, :].float().detach().cpu().numpy()
+                            ),
+                        )
+                    }
+                    if loghists
+                    else {}
+                ),
+            }.items()
+        }
+
+        wandb.log(
+            logdict,
+            step=run_num,
         )
 
-        for i in range(suffix.shape[1]):
-            max_probs_g = torch.max(suffix[:, i, :], dim=-1)
-            max_probs = torch.max(suffix_softmax[:, i, :], dim=-1)
-            mean_max_g = max_probs_g.values.mean()
-            mean_max_sm = max_probs.values.mean()
-            # std_max_g = max_probs_g.values.std()
-            wandb.log(
-                {
-                    f"suffix.probs.hists.gumbel.{i}": wandb.Histogram(
-                        suffix[:, i, :].float().detach().cpu().numpy()
-                    ),
-                    f"suffix.probs.hists.softmax.{i}": wandb.Histogram(
-                        suffix_softmax[:, i, :].float().detach().cpu().numpy()
-                    ),
-                    f"suffix.probs.max.means.gumbel.{i}": mean_max_g,
-                    f"suffix.probs.max.means.softmax.{i}": mean_max_sm,
-                    # f"suffix.maxprob.sts.gumbel.{i}": std_max_g,
-                },
-                step=run_num,
-            )
+    def adjust_logits_for_stability(self):
+        self.suffix_logits.data = (
+            self.suffix_logits.data
+            - self.suffix_logits.data.median(dim=-1, keepdim=True).values
+        )
+
+    def update_suffix_from_probs(self, update_probs: Tensor):
+        self.suffix_logits.data[:] = (
+            self.suffix_logits.data + update_probs * self.cfg.update_size_from_probs
+        )
+        self.cfg.optim.init_optim(self.parameters())

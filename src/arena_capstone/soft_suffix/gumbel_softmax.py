@@ -8,9 +8,6 @@ import torch.nn.functional as F
 from typing import Optional
 from arena_capstone.soft_suffix.sched_config import SchedConfig
 
-# from arena_capstone.algorithm
-# from arena_capstone.algorithm
-
 
 def gumbel_softmax(
     logits: Tensor,
@@ -48,18 +45,6 @@ def gumbel_softmax(
         out = y_soft.detach() + y_soft_bak - y_soft_bak.detach()
         assert (out.sum(dim=dim) < 2).all()
     return out
-
-
-def main():
-    dist = torch.rand(8, 16, 64)
-    d1 = gumbel_softmax(dist, hard=True, noise_scale=0)
-    d2 = gumbel_softmax(dist, tau=0.000001, noise_scale=0)
-    assert torch.allclose(d1, d2, atol=0.01)
-
-
-if __name__ == "__main__":
-    main()
-    print("passed")
 
 
 @dataclass
@@ -138,3 +123,15 @@ class GumbelSoftmaxConfig(SchedConfig):
         # if self.tau < 4:
         #     d["tau_backward"] = 2 + self.tau / 2
         return d
+
+
+def main():
+    dist = torch.rand(8, 16, 64)
+    d1 = gumbel_softmax(dist, hard=True, noise_scale=0)
+    d2 = gumbel_softmax(dist, tau=0.000001, noise_scale=0)
+    assert torch.allclose(d1, d2, atol=0.01)
+
+
+if __name__ == "__main__":
+    main()
+    print("passed")

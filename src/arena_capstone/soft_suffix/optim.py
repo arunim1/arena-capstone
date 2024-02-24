@@ -10,15 +10,21 @@ from typing import Tuple
 
 @dataclass
 class OptimCfg(SchedConfig):
-    optim: str = "RAdam"
+    optim_name: str = "RAdam"
     lr: float = 3e-1
     betas: Tuple[float, float] = (0.9, 0.99)
     momentum: float = 0.9
     weight_decay: float = 0
     eps: float = 1e-8
 
-    def get(self, params):
-        if self.optim == "RAdam":
+    def __post_init__(self):
+        self.optim: torch.optim.Optimizer = None
+
+    def init_optim(self, params):
+        self.optim = self._get(params)
+
+    def _get(self, params):
+        if self.optim_name == "RAdam":
             return torch.optim.RAdam(
                 params,
                 lr=self.lr,
@@ -26,7 +32,7 @@ class OptimCfg(SchedConfig):
                 weight_decay=self.weight_decay,
                 eps=self.eps,
             )
-        if self.optim == "SGD":
+        if self.optim_name == "SGD":
             return torch.optim.SGD(
                 params,
                 lr=self.lr,
@@ -34,4 +40,25 @@ class OptimCfg(SchedConfig):
                 weight_decay=self.weight_decay,
             )
         else:
-            raise ValueError(f"Unknown optimizer {self.optim}")
+            raise ValueError(f"Unknown optimizer {self.optim_name}")
+
+    def schedule(self, run_num, **kwargs):
+        return {}
+
+    def _post_cfg_updated(self, d):
+        raise NotImplementedError
+
+
+def main():
+    ten = torch.tensor([1.0, 2.0, 3.3])
+    ten = torch.nn.Parameter(ten)
+    cfg = OptimCfg()
+    cfg.init_optim([ten])
+    print(cfg.optim)
+
+    cfg.optim()
+    cfg.optim()
+
+
+if __name__ == "__main__":
+    main()

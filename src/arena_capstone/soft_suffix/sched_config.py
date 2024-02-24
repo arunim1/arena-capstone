@@ -8,6 +8,8 @@ class SchedConfig:
         for k, v in d.items():
             setattr(self, k, v)
         wandb.log({f"{cfgname}/{k}": v for k, v in d.items()}, step=run_num)
+        if hasattr(self, "_cfg_update"):
+            self._post_cfg_updated(d)
 
     def scheduler_step(self, run_num, name="cfg", **kwargs):
         for attrname in dir(self):
