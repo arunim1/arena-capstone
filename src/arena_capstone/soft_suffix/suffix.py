@@ -125,7 +125,7 @@ class Suffix(nn.Module):
 
     def penalty(self):
         # return 0
-        return F.relu(self.suffix_logits).mean() * 10
+        return F.relu(self.suffix_logits).mean() * 100
 
 
 def main():

@@ -27,6 +27,7 @@ from transformers import (
     PreTrainedModel,
     LogitsProcessor,
     LogitsProcessorList,
+    LlamaModel,
 )
 from arena_capstone.scripts.run_with_llama import get_llama
 
@@ -69,6 +70,8 @@ class SoftOptPromptConfig(SchedConfig):
     loss_use_end_rewards: bool = False
     k: int = 256
     rand_generate_length: int = 6
+    rand_search_early_stopping: bool = False
+    early_stop_min_i: int = 1
 
 
 class SoftOptPrompt:
@@ -102,7 +105,7 @@ class SoftOptPrompt:
         self.tau_zero_table = (
             wandb.Table(columns=["prefix", "suffix", "completion", "step"])
             if self.cfg.use_wandb
-            else None
+            else None256
         )
         self.table = (
             wandb.Table(columns=["prefix", "suffix", "completion", "step"])
@@ -112,7 +115,7 @@ class SoftOptPrompt:
 
         pd = proc_data(tokenizer)
         self.pd = pd
-        self.data = [next(pd) for _ in range(1)]
+        self.data = [next(pd) for _ in range(103)]
         self.grad_acc = None
         self.gradsquares = None
         self.cached_prefixes_seqchunk = MaskedChunk(
@@ -125,7 +128,7 @@ class SoftOptPrompt:
             i = 0
             while True:
                 i += 1
-                yield self.data[i % len(self.data)]
+                yield self.data[(i) % len(self.data)]
 
         self.dataset = dataset()
 
@@ -298,6 +301,7 @@ class SoftOptPrompt:
     def get_rand_suffixes_vectorized(self, suffix, batch_size, d_vocab):
         suffix_len = suffix.size(0)
         # Clone the original suffix `batch_size` times
+        print("suffix", suffix.shape)
         rand_suffixes = suffix.unsqueeze(0).repeat(batch_size, 1)
 
         # Generate random indices for each suffix in the batch
@@ -454,7 +458,7 @@ class SoftOptPrompt:
             inputs=tokens,
             attention_mask=mask,
             do_sample=True,
-            temperature=0.00001,
+            temperature=1e-10,
             max_length=tokens.shape[1] + self.cfg.rand_generate_length,
         )
         print(generated.shape)
@@ -486,27 +490,50 @@ class SoftOptPrompt:
 
     def full_rand_test_search(self, return_one_hot):
         vocab_size = 32_001
+        best_reward = float("inf")
 
         with torch.inference_mode():
             rand_suffixes = self.full_rand_get_initial_sampled_suffix()
             for run_num in tqdm(range(1, self.cfg.T_greedy + 1)):
                 # this is extremely inefficself.cfg.k, ient but gotta test it quick
-                sub_batch_size = self.cfg.k
+                sub_batch_size = 256
                 assert self.cfg.k % sub_batch_size == 0
-                rewards = []
                 prefixes = self.get_next_prefixes(1)
+                best_reward = (
+                    best_reward if self.cfg.rand_search_early_stopping else float("inf")
+                )
+                best_suffix_idx = None
+                best_so_far = float("inf")
                 for i in range(self.cfg.k // sub_batch_size):
                     r = self.evaluate_suffix(
                         prefixes,
                         rand_suffixes[sub_batch_size * i : sub_batch_size * (i + 1)],
                     )
-                    print("rand_suffixes", rand_suffixes.shape)
-                    print("r", r.shape)
-                    rewards.append(r)
-                rewards = torch.cat(rewards, dim=0)
-                best_suffix_idx = torch.argmin(rewards)
+                    # print("rand_suffixes", rand_suffixes.shape)
+                    # print("r", r.shape)
+                    rminidx = torch.argmin(r)
+                    rmre = r[rminidx]
+                    if rmre < best_so_far:
+                        best_suffix_idx = rminidx + sub_batch_size * i
+                        best_so_far = rmre
+                    if (
+                        self.cfg.rand_search_early_stopping
+                        and i >= self.cfg.early_stop_min_i
+                        and best_so_far < best_reward
+                    ):
+                        break
+                while best_suffix_idx.size().numel() > 1:
+                    print("best_suffix_idx", best_suffix_idx)
+                    best_suffix_idx = best_suffix_idx[0]
+
+                if self.cfg.rand_search_early_stopping:
+                    wandb.log({"searched_i": i})
+                best_reward = best_so_far
+                # rewards.append(r)
+                # rewards = torch.cat(rewards, dim=0)
                 best_suffix = rand_suffixes[best_suffix_idx]
-                self.get_loss(rewards[best_suffix_idx])
+                self.get_loss(r)
+                # self.get_loss(rewards[best_suffix_idx])
                 self.run_num += 1
                 if run_num == self.cfg.T_greedy:
                     if return_one_hot:
@@ -544,7 +571,7 @@ class SoftOptPrompt:
 
 def main():
     torch.set_default_dtype(torch.bfloat16)
-
+    torch.backends.cuda.matmul.allow_tf32 = True
     # num_prompts = 16
     model, embedding_model, tokenizer = get_llama()
 
@@ -582,27 +609,27 @@ def main():
 
     sgd = OptimCfg(
         optim_name="SGD",
-        lr=3e-1,
+        lr=3e1,
         betas=(0.9, 0.99),
-        momentum=0.9,
-        weight_decay=1e-9,
+        momentum=0.75,
+        weight_decay=1e-5,
     )
 
     adam = OptimCfg(
         optim_name="RAdam",
-        lr=3e-1,
-        betas=(0.5, 0.99),
+        lr=0.13,
+        betas=(0, 0.99),
         momentum=0.9,
-        weight_decay=1e-7,
+        weight_decay=1e-6,
     )
     suffix_config = SuffixConfig(
         gumbel_config=GumbelSoftmaxConfig(
-            tau=2,
+            tau=math.e / math.pi,
             hard=False,
             tau_backward=None,
-            noise_scale=1 / 3,
+            noise_scale=1 / 7,
             min_tau=0.1,
-            max_tau=3,
+            max_tau=math.pi,
             tau_annealing_rate=1,
             harden_range=None,
             noise_in_hard=5,
@@ -610,21 +637,22 @@ def main():
             tau_hard=18,
             scale_noise=True,
             max_scaled_noise=1,
-            loss_threshold=-2.5,
+            loss_threshold=10,
         ),
-        suffix_len=7,
+        suffix_len=5,
         optim=adam,
-        update_size_from_probs=3,
-        update_reset_optim=False,
+        update_size_from_probs=1,
+        update_reset_optim=True,
     )
 
     generate_gumbel_config = GumbelSoftmaxConfig(
-        tau=0.8,
+        tau=math.e / math.pi ** (1 + 1 / math.e),
         hard=False,
         tau_backward=None,
-        noise_scale=0.5,
-        min_tau=0.01,
-        tau_annealing_rate=1,
+        noise_scale=math.e / math.pi**math.e,
+        min_tau=0.04,
+        tau_annealing_rate=0.9999,
+        loss_threshold=10,
     )
 
     test_str = "concerns conflicts formally隆 Tell I I fightingages:@ yes"
@@ -639,15 +667,18 @@ def main():
     cfg = SoftOptPromptConfig(
         suffix=None,  # torch.randint(5, 1000, (6,), device=DEVICE),
         post_suffix=post_suffix,
-        batch_size=1,
-        k=256,
+        batch_size=4,
         suffix_config=suffix_config,
         generate_gumbel_config=generate_gumbel_config,
-        T=40,
-        T_greedy=50,
+        T=250,
+        T_greedy=100,
         use_wandb=True,
         generate_length=6,
+        rand_generate_length=4,
         loss_use_end_rewards=True,
+        k=2048,
+        rand_search_early_stopping=True,
+        early_stop_min_i=1,
     )
 
     upo = SoftOptPrompt(

@@ -100,7 +100,7 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
             return we
         return we.unsqueeze(0)
 
-    def forward_from_embed(self, embed, attention_mask=None):
+    def forward_from_embed(self, embed, attention_mask=None, **kwargs):
         if isinstance(embed, MaskedChunk):
             assert self.model == embed.model
             assert attention_mask is None
@@ -108,9 +108,9 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
             embed = embed.seq
         assert embed.dtype == torch.bfloat16
         if attention_mask is None:
-            out = self.model(inputs_embeds=embed)
+            out = self.model(inputs_embeds=embed,**kwargs)
         else:
-            out = self.model(inputs_embeds=embed, attention_mask=attention_mask)
+            out = self.model(inputs_embeds=embed, attention_mask=attention_mask,**kwargs)
         if hasattr(out, "logits") and out.logits.dtype != torch.bfloat16:
             out.logits = out.logits.bfloat16()
         return out
