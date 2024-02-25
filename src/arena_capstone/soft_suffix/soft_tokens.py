@@ -219,8 +219,10 @@ class SoftOptPrompt:
         )
 
     def log(self, run_num: int):
+        if run_num % 5 != 1:
+            return
         if self.cfg.use_wandb:
-            self.suffix.log(run_num)
+            self.suffix.log(run_num, loghists=run_num % 50 == 0)
             prefixes, suffixes, completions = self.generate_printable()
             for prefix, suffix, completion in zip(prefixes, suffixes, completions):
                 self.table.add_data(
@@ -268,8 +270,7 @@ class SoftOptPrompt:
         self.optim.step()
         self.optim.zero_grad()
         self.cfg.scheduler_step(self.run_num, loss=loss)
-        if self.run_num % 50 == 10:
-            self.log(run_num=self.run_num)
+        self.log(run_num=self.run_num)
         self.run_num += 1
 
     def megatrain(self, build_reward_context, build_generate_context=None): ...
@@ -307,6 +308,36 @@ class SoftOptPrompt:
         rand_suffixes[batch_indices, rand_indices] = rand_tokens
 
         return rand_suffixes
+
+    def get_topk_suffixes_vectorized(self, suffix, batch_size, suffix_probs, local_k):
+        suffix_len, d_vocab = suffix_probs.shape
+        # Clone the original suffix `batch_size` times
+        topk_suffixes = suffix.unsqueeze(0).repeat(batch_size, 1)
+
+        # For each position in the suffix, identify the top k probabilities and their indices
+        topk_values, topk_indices = torch.topk(input=suffix_probs, k=local_k, dim=1)
+
+        # Sample uniformly from these top k indices for each position in the suffix
+        # This gives us a tensor of shape (suffix_len, batch_size) after sampling
+        sampled_indices = torch.stack(
+            [
+                indices[torch.randint(len(indices), (batch_size,))]
+                for indices in topk_indices
+            ],
+            dim=1,
+        )
+
+        # Use torch.arange to generate a batch of indices [0, 1, ..., batch_size-1]
+        # and a repeat of range for each position in the suffix to correctly assign the sampled tokens
+        batch_indices = torch.arange(batch_size, device=suffix.device).unsqueeze(1)
+        position_indices = torch.arange(suffix_len, device=suffix.device).repeat(
+            batch_size, 1
+        )
+
+        # Replace the tokens in topk_suffixes with the sampled tokens
+        topk_suffixes[batch_indices, position_indices] = sampled_indices
+
+        return topk_suffixes
 
     def suffix_only_part_random_test(self):
         self.run_num = 1
@@ -375,10 +406,10 @@ class SoftOptPrompt:
                 )
 
                 # maybe log idk
-                if run_num % 50 == 10:
-                    one_hot_best = F.one_hot(best_suffix, vocab_size)
-                    self.suffix.update_suffix_from_probs(one_hot_best)
-                    self.log(run_num=self.run_num)
+                # if run_num % 5 == 0:
+                # one_hot_best = F.one_hot(best_suffix, vocab_size)
+                # self.suffix.update_suffix_from_probs(one_hot_best)
+                # self.log(run_num=self.run_num)
 
                 self.run_num += 1
 
@@ -426,30 +457,42 @@ def main():
     # GBRT paper hyperparams
     import math
 
+    sgd = OptimCfg(
+        optim_name="SGD",
+        lr=3e-1,
+        betas=(0.9, 0.99),
+        momentum=0.9,
+        weight_decay=0,
+    )
+
+    adam = OptimCfg(
+        optim_name="RAdam",
+        lr=3e-1,
+        betas=(0.9, 0.99),
+        momentum=0.9,
+        weight_decay=3e-6,
+    )
     suffix_config = SuffixConfig(
         gumbel_config=GumbelSoftmaxConfig(
-            tau=math.e**math.pi,
+            tau=12,
             hard=False,
             tau_backward=None,
             noise_scale=1 / 7,
             min_tau=0.001,
-            tau_annealing_rate=0.999,
-            harden_range=(0, 40),
+            max_tau=10,
+            tau_annealing_rate=0.995,
+            harden_range=None,
             noise_in_hard=5,
             noise_annealing=0.99,
-            tau_hard=math.e**2,
+            tau_hard=18,
             scale_noise=True,
             max_scaled_noise=1,
+            loss_threshold=-2,
         ),
         suffix_len=7,
-        optim=OptimCfg(
-            optim_name="RAdam",
-            lr=3e-1,
-            betas=(0.9, 0.99),
-            momentum=0.9,
-            weight_decay=0,
-        ),
-        update_size_from_probs=50,
+        optim=adam,
+        update_size_from_probs=10,
+        update_reset_optim=False,
     )
 
     # suffix_config = SuffixConfig(

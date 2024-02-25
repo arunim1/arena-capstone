@@ -14,10 +14,6 @@ from arena_capstone.rewards.reward_generator import (
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-def isinfnan(t):
-    return torch.any(torch.isnan(t) | torch.isinf(t))
-
-
 """
 outline of the completely random method: 
 - no gradients, everything can be in inference mode
@@ -65,20 +61,73 @@ def random_method(
     num_prompts,
     # print_text,
 ):
+    def log_completions(best_suffix, m_c):
+        # generate and log completions, using the best suffix (no batch size)
+        for prefix, mask in zip(prefixes[:m_c], masks[:m_c]):
+            # generate the prompts (prefix + suffix + post_suffix)
+            prompt = torch.cat((prefix, best_suffix, post_suffix), dim=0)
+
+            # generate the completions for each prompt
+            proper_mask = torch.cat(
+                (mask, torch.ones_like(suffix), torch.ones_like(post_suffix))
+            )
+
+            assert prompt.shape == proper_mask.shape
+
+            completion = model.generate(
+                prompt,
+                attention_mask=proper_mask,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=100000,
+                max_length=64,
+            )
+
+            # input to the reward model is prefix + post_suffix + completion
+            rew_input = torch.cat(
+                (
+                    prefix,
+                    post_suffix,
+                    completion,
+                ),
+                dim=0,
+            )
+
+            proper_rew_mask = torch.cat(
+                (prefix, torch.ones_like(post_suffix), torch.ones_like(completion))
+            )
+
+            # get the reward for each completion
+            rewards = reward_model(
+                input_ids=rew_input,
+                attention_mask=proper_rew_mask,
+            )
+
+            completion_table.add_data(
+                tokenizer.decode(prefix),
+                tokenizer.decode(best_suffix),
+                tokenizer.decode(post_suffix),
+                tokenizer.decode(completion),
+                rewards.end_rewards.item(),
+                run_num,
+            )
 
     if use_wandb:
         # Initialize wandb
         wandb.init(project="reward_random")
 
         # Initialize wandb.Table
-        wandb_table = wandb.Table(columns=["step", "best_suffix", "best_reward"])
+        wandb_table = wandb.Table(columns=["best_suffix", "best_reward", "step"])
+
+        completion_table = wandb.Table(
+            columns=["prefix", "suffix", "post_suffix", "completion", "reward", "step"]
+        )
 
     d_vocab = model.config.vocab_size
     curr_suffix = suffix
     suffix_len = suffix.shape[0]
     m = len(prefixes)
     m_c = 1
-    for run_num in tqdm(range(T)):  # repeat T times
+    for run_num in tqdm(range(1, T + 1)):  # repeat T times
         # generate the suffixes
         rand_suffixes = get_rand_suffixes_vectorized(curr_suffix, batch_size, d_vocab)
 
@@ -95,7 +144,9 @@ def random_method(
             # generate the completions for each prompt
             # all_ones_masks = [torch.ones_like(prompt, dtype=torch.bool) for prompt in prompts]
             proper_masks_list = [
-                torch.cat((mask, torch.ones_like(curr_suffix), torch.ones_like(post_suffix)))
+                torch.cat(
+                    (mask, torch.ones_like(curr_suffix), torch.ones_like(post_suffix))
+                )
                 for _ in rand_suffixes
             ]
 
@@ -129,7 +180,9 @@ def random_method(
             rew_input = torch.stack(rew_input, dim=0)
 
             proper_rew_masks = [
-                torch.cat((prefix, torch.ones_like(post_suffix), torch.ones_like(completion)))
+                torch.cat(
+                    (prefix, torch.ones_like(post_suffix), torch.ones_like(completion))
+                )
                 for completion in completions
             ]
             proper_rew_masks = torch.stack(proper_rew_masks, dim=0)
@@ -147,14 +200,14 @@ def random_method(
         best_suffix = rand_suffixes[best_suffix_idx]
 
         # Log the result every 10 steps
-        if use_wandb: 
+        if use_wandb:
             best_rew = mean_of_rewards[best_suffix_idx].item()
-            wandb.log({"best_reward": best_rew}, step=run_num+1)
-            wandb.log({"m_c": m_c}, step=run_num+1)
-            if (run_num % 10 == 0):
-                print("step: ", run_num+1, "best_reward: ", best_rew)
-                wandb_table.add_data(run_num+1, best_suffix.tolist(), best_rew)
-
+            wandb.log({"best_reward": best_rew}, step=run_num)
+            wandb.log({"m_c": m_c}, step=run_num)
+            if run_num % 100 == 0:
+                print("step: ", run_num, "best_reward: ", best_rew)
+                wandb_table.add_data(best_suffix.tolist(), best_rew, run_num)
+                log_completions(best_suffix, m_c)
 
         # if the reward is below a threshold, add more prefixes
         if rewards.end_rewards[best_suffix_idx] < threshold and m_c < m:
@@ -165,13 +218,14 @@ def random_method(
 
     if use_wandb:
         wandb.log({"suffix_rewards_table": wandb_table})
+        wandb.log({"completion_table": completion_table})
         wandb.finish()
 
     return curr_suffix
 
 
 def main():
-    num_prompts = 20
+    num_prompts = None
     model, embedding_model, tokenizer = get_llama()
     del embedding_model
     gc.collect()
@@ -180,18 +234,25 @@ def main():
 
     harmful_behavior_data = pd.read_csv("./data/advbench/harmful_behaviors.csv")
     harmful_behavior_data.head()
-    prefix_strs = harmful_behavior_data["goal"].tolist()[2 : 2 + num_prompts]
+    if num_prompts is not None:
+        prefix_strs = harmful_behavior_data["goal"].tolist()[:num_prompts]
+    else:
+        prefix_strs = harmful_behavior_data["goal"].tolist()
 
-    tokenized_prefixes = tokenizer(prefix_strs, return_tensors='pt', padding=True, truncation=True, max_length=4096)
+    tokenized_prefixes = tokenizer(
+        prefix_strs, return_tensors="pt", padding=True, truncation=True, max_length=4096
+    )
 
     print(tokenized_prefixes.input_ids.shape, tokenized_prefixes.attention_mask.shape)
     assert tokenized_prefixes.input_ids.shape == tokenized_prefixes.attention_mask.shape
 
-    prefixes = [x for x in tokenized_prefixes.input_ids.long().to(DEVICE)] # len is num_prompts
+    prefixes = [
+        x for x in tokenized_prefixes.input_ids.long().to(DEVICE)
+    ]  # len is num_prompts
     masks = [x for x in tokenized_prefixes.attention_mask.to(DEVICE)]
 
     reward_model: RewardGenerator = get_reward_generator()
-    
+
     post_suffix_str = "ASSISTANT: "
     post_suffix = tokenizer(post_suffix_str, return_tensors="pt").input_ids
     post_suffix = post_suffix.squeeze().to(DEVICE)
@@ -214,7 +275,7 @@ def main():
                 T=4000,
                 batch_size=64,
                 use_wandb=True,
-                threshold=1,
+                threshold=-1.8,
                 reward_model=reward_model,
                 num_prompts=num_prompts,
             )

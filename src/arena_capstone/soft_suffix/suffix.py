@@ -19,6 +19,7 @@ class SuffixConfig(SchedConfig):
     suffix_len: int = 5
     iterative_freeze: bool = False
     update_size_from_probs: float = 50
+    update_reset_optim: bool = True
 
 
 class Suffix(nn.Module):
@@ -79,10 +80,8 @@ class Suffix(nn.Module):
                 },
                 **(
                     {
-                        f"suffix/probs/hists/{pos}/{distname}": (
-                            wandb.Histogram(
-                                dist[:, pos, :].float().detach().cpu().numpy()
-                            ),
+                        f"suffix/probs/hists/{pos}/{distname}": wandb.Histogram(
+                            dist[:, pos, :].float().detach().cpu().numpy()
                         )
                     }
                     if loghists
@@ -106,4 +105,5 @@ class Suffix(nn.Module):
         self.suffix_logits.data[:] = (
             self.suffix_logits.data + update_probs * self.cfg.update_size_from_probs
         )
-        self.cfg.optim.init_optim(self.parameters())
+        if self.cfg.update_reset_optim:
+            self.cfg.optim.init_optim(self.parameters())

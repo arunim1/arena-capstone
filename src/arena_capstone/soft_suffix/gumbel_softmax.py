@@ -64,7 +64,8 @@ class GumbelSoftmaxConfig(SchedConfig):
     scale_noise: bool = False
     max_scaled_noise: float = 1
     max_tau: float = 20
-    noise_annealing: float = 0.99
+    noise_annealing: float = 1
+    loss_threshold: float = -3
 
     def gumbel_softmax(self, logits, tau=None, noise_scale=None, hard=None):
         if self.bad_words_ids is not None:
@@ -94,34 +95,43 @@ class GumbelSoftmaxConfig(SchedConfig):
 
     def schedule(self, run_num: int, **kwargs) -> dict:
         d = {}
-        d["hard"] = self.harden_range is None or (
-            self.harden_range[1] - self.harden_range[0]
-        ) <= (run_num % self.harden_range[1])
+        d["hard"] = (
+            self.hard
+            if self.harden_range is None
+            else (self.harden_range[1] - self.harden_range[0])
+            <= (run_num % self.harden_range[1])
+        )
+        noise_annealing = self.noise_annealing
 
-        d["noise_scale"] = self.noise_scale * self.noise_annealing
         if d["hard"]:
+            tau = self.tau_hard or self.tau
             if self.noise_in_hard is not None:
                 d["noise_scale"] = self.noise_in_hard
-            d["tau"] = self.tau_hard or self.tau
-
+            anneal_tau = lambda t: t * self.tau_annealing_rate
         else:
+            tau = self.temp_tau_soft
             if self.noise_in_hard is not None:
                 d["noise_scale"] = self.temp_noise
             loss = kwargs["loss"]
-            if loss < -4.5:
-                d["temp_tau_soft"] = min(
-                    self.max_tau,
-                    max(self.min_tau, self.temp_tau_soft * self.tau_annealing_rate),
-                )
-            else:
-                d["temp_tau_soft"] = min(
-                    self.max_tau,
-                    max(self.min_tau, self.temp_tau_soft / (self.tau_annealing_rate)),
-                )
-            d["tau"] = d["temp_tau_soft"]
+            anneal_tau = lambda t: (
+                tau * self.tau_annealing_rate
+                if loss < self.loss_threshold
+                else tau / self.tau_annealing_rate
+            )
 
-        # if self.tau < 4:
-        #     d["tau_backward"] = 2 + self.tau / 2
+        clamp_tau = lambda t: min(self.max_tau, max(self.min_tau, t))
+        tau = clamp_tau(anneal_tau(tau))
+        noise_scale = d.get("noise_scale", self.noise_scale) * noise_annealing
+
+        d["tau"] = tau
+        d["noise_scale"] = noise_scale
+        if d["hard"]:
+            d["tau_hard"] = tau
+            d["noise_in_hard"] = noise_scale
+        else:
+            d["temp_tau_soft"] = tau
+            # d["temp_noise"] = noise_scale disable this bc not clear we want to anneal soft noise
+
         return d
 
 
