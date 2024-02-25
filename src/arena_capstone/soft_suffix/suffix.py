@@ -41,10 +41,12 @@ class Suffix(nn.Module):
         self.noise_scale = cfg.gumbel_config.noise_scale
         self.cfg = cfg
 
-    def forward(self, batch_size, tau=None) -> Tensor:
-        return self.cfg.gumbel_config.gumbel_softmax(
-            self.suffix_logits.expand(batch_size, -1, -1), tau=tau
+    def forward(self, batch_size, tau=None, noise_scale=None) -> Tensor:
+        out = self.cfg.gumbel_config.gumbel_softmax(
+            self.suffix_logits.expand(batch_size, -1, -1), tau=tau, noise_scale=None
         )
+        assert out.dtype == torch.bfloat16
+        return out
 
     @property
     def optim(self):
@@ -80,7 +82,7 @@ class Suffix(nn.Module):
                 },
                 **(
                     {
-                        f"suffix/probs/hists/{pos}/{distname}": wandb.Histogram(
+                        f"suffix.probs.hists.{distname}.{pos}": wandb.Histogram(
                             dist[:, pos, :].float().detach().cpu().numpy()
                         )
                     }
@@ -98,12 +100,39 @@ class Suffix(nn.Module):
     def adjust_logits_for_stability(self):
         self.suffix_logits.data = (
             self.suffix_logits.data
-            - self.suffix_logits.data.median(dim=-1, keepdim=True).values
+            - self.suffix_logits.data.float()  # no bfloat16 median
+            .median(dim=-1, keepdim=True)
+            .values.bfloat16()
         )
+        # ceiling = 20
+        # top = torch.max(self.suffix_logits.data, dim=-1, keepdim=True).values
+        # self.suffix_logits.data = (
+        #     torch.where(top > ceiling, ceiling / top, 1) * self.suffix_logits.data
+        # )
+
+        # self.suffix_logits.data /= 1
+        # .clamp_(None, 50)
+
+        # self.suffix_logits.data.clamp_(None, 50)
 
     def update_suffix_from_probs(self, update_probs: Tensor):
+        self.adjust_logits_for_stability()
         self.suffix_logits.data[:] = (
             self.suffix_logits.data + update_probs * self.cfg.update_size_from_probs
         )
         if self.cfg.update_reset_optim:
             self.cfg.optim.init_optim(self.parameters())
+
+    def penalty(self):
+        # return 0
+        return F.relu(self.suffix_logits).mean() * 10
+
+
+def main():
+    torch.set_default_dtype(torch.bfloat16)
+    tens = torch.rand(1, 5, 32001, dtype=torch.bfloat16, device="cuda")
+    q = tens.quantile(0.5)
+
+
+if __name__ == "__main__":
+    main()

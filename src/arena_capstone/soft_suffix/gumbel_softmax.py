@@ -21,7 +21,7 @@ def gumbel_softmax(
     gumbels = (
         -torch.empty_like(logits).exponential_().log() * noise_scale
     )  # ~Gumbel(0,1)
-
+    assert logits.dtype == torch.bfloat16
     input_gumbels = (logits + gumbels * noise_scale) / tau  # ~Gumbel(logits,tau)
 
     y_soft = F.softmax(input_gumbels, dim=dim)
@@ -44,6 +44,7 @@ def gumbel_softmax(
         y_soft_bak = F.softmax(input_gumbels_bak, dim=dim)
         out = y_soft.detach() + y_soft_bak - y_soft_bak.detach()
         assert (out.sum(dim=dim) < 2).all()
+    assert out.dtype == torch.bfloat16
     return out
 
 

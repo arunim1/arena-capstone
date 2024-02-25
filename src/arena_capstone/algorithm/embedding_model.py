@@ -91,9 +91,11 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
             # Llama
             wte = self.model.get_input_embeddings()
         if onehot:
+            # print("tok", tokens_or_onehot.dtype, wte.weight.dtype)
             we = tokens_or_onehot @ wte.weight
         else:
             we = wte(tokens_or_onehot)
+        # assert we.dtype == torch.bfloat16
         if batched:
             return we
         return we.unsqueeze(0)
@@ -101,12 +103,17 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
     def forward_from_embed(self, embed, attention_mask=None):
         if isinstance(embed, MaskedChunk):
             assert self.model == embed.model
+            assert attention_mask is None
             attention_mask = embed.mask
             embed = embed.seq
+        assert embed.dtype == torch.bfloat16
         if attention_mask is None:
-            return self.model(inputs_embeds=embed)
+            out = self.model(inputs_embeds=embed)
         else:
-            return self.model(inputs_embeds=embed, attention_mask=attention_mask)
+            out = self.model(inputs_embeds=embed, attention_mask=attention_mask)
+        if hasattr(out, "logits") and out.logits.dtype != torch.bfloat16:
+            out.logits = out.logits.bfloat16()
+        return out
 
     def embed_nice(
         self,
@@ -298,7 +305,7 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         """
         assert suffix_tokens.ndim == 1
         hot = F.one_hot(suffix_tokens, num_classes=self.model.config.vocab_size)
-        hot = hot.float()
+        hot = hot.bfloat16()
         hot.requires_grad = True
         return hot
 

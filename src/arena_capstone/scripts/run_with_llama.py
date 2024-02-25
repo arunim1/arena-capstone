@@ -2,7 +2,7 @@ import os
 
 import pandas as pd
 import torch
-from transformers import LlamaForCausalLM, LlamaTokenizer
+from transformers import LlamaForCausalLM, LlamaTokenizer, LlamaModel, AutoTokenizer
 
 from arena_capstone.algorithm.embedding_model import EmbeddingFriendlyForCausalLM
 from arena_capstone.algorithm.gcg import GCG, GCGConfig
@@ -57,6 +57,7 @@ def get_llama(model_str="ethz-spylab/poisoned_generation_trojan1", device="cuda"
     print("done importing llama")
 
     tokenizer = LlamaTokenizer.from_pretrained(model_str, token=token)
+
     embedding_friendly = EmbeddingFriendlyForCausalLM(llamamodel)
 
     return llamamodel, embedding_friendly, tokenizer
