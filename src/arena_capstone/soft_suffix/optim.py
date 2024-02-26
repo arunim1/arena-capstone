@@ -16,6 +16,7 @@ class OptimCfg(SchedConfig):
     momentum: float = 0.9
     weight_decay: float = 0
     eps: float = 1e-8
+    nesterov: bool = True
 
     def __post_init__(self):
         self.optim: torch.optim.Optimizer = None
@@ -38,6 +39,7 @@ class OptimCfg(SchedConfig):
                 lr=self.lr,
                 momentum=self.momentum,
                 weight_decay=self.weight_decay,
+                nesterov=self.nesterov,
             )
         elif self.optim_name == "RProp":
             return torch.optim.Rprop(

@@ -102,7 +102,7 @@ class RewardGenerator(RewardModel):
             if not return_dict:
                 return rewards, end_rewards
 
-            return RewardModelOutput(
+            reward_out = RewardModelOutput(
                 rewards=rewards,  # size = (B, L, D)
                 end_rewards=end_rewards,  # size = (B, D)
             )
@@ -132,10 +132,12 @@ class RewardGenerator(RewardModel):
             if not return_dict:
                 return rewards, end_rewards
 
-            return RewardModelOutput(
+            reward_out = RewardModelOutput(
                 rewards=rewards,  # size = (B, L, D)
                 end_rewards=end_rewards,  # size = (B, D)
             )
+        setattr(reward_out, "attention_mask", attention_mask)
+        return reward_out
 
     def logit_rewards_from_embedded_batch(
         self,

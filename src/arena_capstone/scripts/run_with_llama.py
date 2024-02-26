@@ -57,6 +57,7 @@ def get_llama(model_str="ethz-spylab/poisoned_generation_trojan1", device="cuda"
     print("done importing llama")
 
     tokenizer = LlamaTokenizer.from_pretrained(model_str, token=token)
+    tokenizer = AutoTokenizer.from_pretrained(model_str, token=token)
 
     embedding_friendly = EmbeddingFriendlyForCausalLM(llamamodel)
 
@@ -64,7 +65,7 @@ def get_llama(model_str="ethz-spylab/poisoned_generation_trojan1", device="cuda"
 
 
 def get_llama_tokenizer():
-    tokenizer = LlamaTokenizer.from_pretrained(model_str, token=token)
+    tokenizer = AutoTokenizer.from_pretrained(model_str, token=token)
     return tokenizer
 
 

@@ -24,8 +24,13 @@ seq2 = torch.tensor([1, 2, 3])
 key_values = model(input_ids=seq2, use_cache=True).past_key_values
 
 new_seq = torch.tensor([4, 5])
-magic = model(input_ids=new_seq, use_cache=True, past_key_values=key_values).logits
-
+# %%
+magic = model(
+    input_ids=seq.unsqueeze(0), use_cache=True, past_key_values=key_values
+).logits
+magic2 = model.generate(
+    input_ids=seq.unsqueeze(0), use_cache=True, past_key_values=key_values
+)
 
 # %%
 print(torch.allclose(original_out[-1, :], magic[-1, :]))
@@ -126,9 +131,46 @@ generated.shape
 # .decode(generated_tokens)
 # gen_probs[4].shape
 # %%
+prompt = tokenizer(prompts, return_tensors="pt", padding=True)
+
 compare = model.generate(
-    input_ids=prompt, max_length=50, do_sample=False, temperature=1e-9
+    input_ids=prompt.input_ids,
+    attention_mask=prompt.attention_mask,
+    max_length=50,
+    do_sample=True,
+    temperature=1e-9,
+    pad_token_id=tokenizer.pad_token_id,
 )
+compare1 = model.generate(
+    input_ids=prompt.input_ids,
+    attention_mask=prompt.attention_mask,
+    max_length=50,
+    do_sample=True,
+    temperature=1e-9,
+    pad_token_id=tokenizer.pad_token_id,
+)
+
+compare2 = model.generate(
+    input_ids=prompt.input_ids,
+    attention_mask=prompt.attention_mask,
+    max_length=50,
+    do_sample=False,
+    temperature=1e2,
+    pad_token_id=tokenizer.pad_token_id,
+)
+
+comparens = model.generate(
+    input_ids=prompt.input_ids,
+    attention_mask=prompt.attention_mask,
+    max_length=50,
+    pad_token_id=tokenizer.pad_token_id,
+)
+
+print(torch.allclose(compare, compare2))
+print(torch.allclose(compare, comparens))
+print(torch.allclose(compare2, comparens))
+print(torch.allclose(compare1, compare2))
+
 # %%
 for i in range(3):
     print(tokenizer.decode(list(generated[i])))

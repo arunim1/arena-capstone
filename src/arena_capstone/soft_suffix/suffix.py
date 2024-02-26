@@ -20,6 +20,7 @@ class SuffixConfig(SchedConfig):
     iterative_freeze: bool = False
     update_size_from_probs: float = 50
     update_reset_optim: bool = True
+    update_const_scale_logits: float = 1
     ceil_scale: int = False
     l1_coeff: float = 0.0
     max_grad_norm: float = 1
@@ -119,7 +120,7 @@ class Suffix(nn.Module):
                 torch.where(top > ceiling, ceiling / top, 1) * self.suffix_logits.data
             )
 
-        # self.suffix_logits.data /= 1
+        self.suffix_logits.data *= self.cfg.update_const_scale_logits
         # .clamp_(None, 50)
 
         # self.suffix_logits.data.clamp_(None, 50)

@@ -517,6 +517,10 @@ class EmbeddingFriendlyValueHeadForCausalLM(EmbeddingFriendlyForCausalLM):
             )
         if hasattr(out, "logits") and out.logits.dtype != torch.bfloat16:
             out.logits = out.logits.bfloat16()
+        if hasattr(out, "hidden_states"):
+            last_hidden_state = out.hidden_states[-1]
+            value = self.value_head(last_hidden_state)
+            setattr(out, "value", value)
         return out
 
 

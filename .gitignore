@@ -6,3 +6,5 @@ ssh*.json
 wandb/
 env/
 .vscode/
+files-from-remote/
+models-from-remote/
