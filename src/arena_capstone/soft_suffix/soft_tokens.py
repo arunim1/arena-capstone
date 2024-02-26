@@ -158,6 +158,7 @@ class SoftOptPrompt:
 
         self.dataset = dataset()
         self.best_search_suffix = None
+        self.last_loss = None
 
     def train(self):
         for run_num in tqdm(range(1, self.cfg.T + 1)):
@@ -249,7 +250,7 @@ class SoftOptPrompt:
         return MaskedChunk(seq=tokens, mask=masks)
 
     def log(self, run_num: int):
-        if run_num % 11 == 0:
+        if run_num > 25:
             self.log_best_suffix()
         if run_num % 5 != 1:
             return
@@ -476,7 +477,7 @@ class SoftOptPrompt:
                     self.process_rewards(rewards)
                 )  # [:2] maybe? bc the dumb reward batch thing
                 best_suffix = rand_suffixes[best_suffix_idx]
-                self.get_loss(rewards)  # does logging
+                self.last_loss = self.get_loss(rewards)  # does logging
                 rand_suffixes = self.fullrand_get_suffix(
                     best_suffix, inference_batch_size, vocab_size
                 )
@@ -694,7 +695,7 @@ class SoftOptPrompt:
         for _ in range(num_cycles):
             one_hot_best = self.full_rand_test_search(return_one_hot=True)
             self.suffix.update_suffix_from_probs(one_hot_best)
-            # self.train()
+            self.train()
 
     def to_profile_train(self):
         self.cfg.T = 2
@@ -839,8 +840,8 @@ def main(i=None):
         suffix_config=suffix_config,
         generate_gumbel_config=generate_gumbel_config,
         generate_length=3,
-        T=15,
-        T_greedy=100,
+        T=10,
+        T_greedy=50,
         rand_generate_length=8,
         search_batch_size=256,
         search_average_over_batches=2,
@@ -863,7 +864,7 @@ def main(i=None):
 
     # with torch.cuda.amp.autocast(dtype=torch.bfloat16):
     upo.run(upo.full_rand_mixed_train)
-
+    return upo.best_search_suffix, upo.last_loss
     # upo.run(profilefunc_wrapper()(lambda: upo.to_profile_train()))
 
 
