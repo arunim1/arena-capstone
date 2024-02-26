@@ -187,3 +187,18 @@ rew.wtd
 
 x @ v_head
 x @ trojan.wtd @ rew.wtd.inverse() @ v_head
+
+
+# %%
+
+c = model.generate(
+    input_ids=prompt.input_ids,
+    attention_mask=prompt.attention_mask,
+    max_length=50,
+    pad_token_id=tokenizer.pad_token_id,
+    output_hidden_states=True,
+)
+
+# %%
+c.hidden_states[0].shape
+# %%

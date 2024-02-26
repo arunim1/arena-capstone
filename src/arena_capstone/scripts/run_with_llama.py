@@ -2,9 +2,12 @@ import os
 
 import pandas as pd
 import torch
-from transformers import LlamaForCausalLM, LlamaTokenizer, LlamaModel, AutoTokenizer
+from transformers import LlamaForCausalLM, LlamaTokenizer, LlamaModel
 
-from arena_capstone.algorithm.embedding_model import EmbeddingFriendlyForCausalLM
+from arena_capstone.algorithm.embedding_model import (
+    EmbeddingFriendlyForCausalLM,
+    EmbeddingFriendlyValueHeadForCausalLM,
+)
 from arena_capstone.algorithm.gcg import GCG, GCGConfig
 from arena_capstone.algorithm.upo import UPO, UPOConfig
 
@@ -16,6 +19,35 @@ token = os.getenv("HF_TOKEN")
 
 llama_bf16_path = Path("/workspace/llama_bf16.pt")
 model_str = "ethz-spylab/poisoned_generation_trojan1"
+
+import torch.nn as nn
+
+
+def model_str_from_int(i):
+    return f"ethz-spylab/poisoned_generation_trojan{i}"
+
+
+def get_value_head(model_str=model_str):
+    if isinstance(model_str, int):
+        model_str = model_str_from_int(model_str)
+    mod_str = model_str.replace("/", "_")
+    value_head_str = f"models-from-remote/4k4k_value_head_{mod_str}.pt"
+    value_head_dict = torch.load(value_head_str)
+    value_head = (
+        nn.Sequential(nn.Linear(4096, 4096), nn.GELU(), nn.Linear(4096, 1))
+        .cuda()
+        .bfloat16()
+    )
+    value_head.load_state_dict(value_head_dict)
+    # vhs = "/home/g/arena/arena-capstone/models-from-remote/4k4k_value_head_ethz-spylab_poisoned_generation_trojan1.pt"
+    # value_head = torch.load(vhs)
+
+    llamamodel = load_from_pt(LlamaForCausalLM, model_str)
+    embedding_friendly = EmbeddingFriendlyValueHeadForCausalLM(llamamodel, value_head)
+
+    tokenizer = LlamaTokenizer.from_pretrained(model_str, token=token)
+
+    return llamamodel, embedding_friendly, tokenizer
 
 
 def load_from_pt(cls, model_str):
@@ -36,7 +68,7 @@ def load_from_pt(cls, model_str):
     return llamamodel
 
 
-def get_llama(model_str="ethz-spylab/poisoned_generation_trojan1", device="cuda"):
+def get_llama(model_str=model_str, device="cuda"):
     """
     Loads a LLaMA language model in evaluation, its tokenizer, and an embedding-friendly version on the specified device.
 
@@ -57,7 +89,6 @@ def get_llama(model_str="ethz-spylab/poisoned_generation_trojan1", device="cuda"
     print("done importing llama")
 
     tokenizer = LlamaTokenizer.from_pretrained(model_str, token=token)
-    tokenizer = AutoTokenizer.from_pretrained(model_str, token=token)
 
     embedding_friendly = EmbeddingFriendlyForCausalLM(llamamodel)
 
@@ -65,7 +96,7 @@ def get_llama(model_str="ethz-spylab/poisoned_generation_trojan1", device="cuda"
 
 
 def get_llama_tokenizer():
-    tokenizer = AutoTokenizer.from_pretrained(model_str, token=token)
+    tokenizer = LlamaTokenizer.from_pretrained(model_str, token=token)
     return tokenizer
 
 

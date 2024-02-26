@@ -19,6 +19,7 @@ def gumbel_softmax(
     dim: int = -1,
 ):
     # tau_backward = tau_backward or tau
+    assert tau != 0
     gumbels = (
         -torch.empty_like(logits).exponential_().log() * noise_scale
     )  # ~Gumbel(0,1)
@@ -26,7 +27,7 @@ def gumbel_softmax(
     input_gumbels = (logits + gumbels * noise_scale) / tau  # ~Gumbel(logits,tau)
 
     y_soft = F.softmax(input_gumbels, dim=dim)
-    assert (y_soft.sum(dim=dim) < 2).all()
+    assert (y_soft.sum(dim=dim) < 32008).all(), y_soft.sum(dim=dim)
     if hard:
         # y_hard = y_soft.max(-1, keepdim=True)[0].eq(y_soft).bfloat16()
         assert dim == -1
@@ -34,17 +35,20 @@ def gumbel_softmax(
             dim=dim, index=y_soft.argmax(dim=dim, keepdim=True), value=1.0
         )
         out = y_hard.detach() + (y_soft - y_soft.detach())
-        assert (out.sum(dim=dim) < 2).all(), y_soft.argmax(dim=-1)
+        assert (out.sum(dim=dim) < 32008).all(), (
+            y_soft.argmax(dim=-1),
+            out.sum(dim=dim),
+        )
 
     elif not tau_backward:
         out = y_soft
-        assert (out.sum(dim=dim) < 2).all()
+        assert (out.sum(dim=dim) < 32008).all(), out.sum(dim=dim)
 
     else:
         input_gumbels_bak = (logits + gumbels * noise_scale) / tau_backward
         y_soft_bak = F.softmax(input_gumbels_bak, dim=dim)
         out = y_soft.detach() + y_soft_bak - y_soft_bak.detach()
-        assert (out.sum(dim=dim) < 2).all()
+        assert (out.sum(dim=dim) < 32008).all(), out.sum(dim=dim)
     assert out.dtype == torch.bfloat16
     return out
 

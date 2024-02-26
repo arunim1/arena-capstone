@@ -9,19 +9,23 @@ from arena_capstone.rewards.reward_generator import (
     get_reward_generator,
 )
 import torch
-from arena_capstone.rewards.dataset_preprocess import proc_data
+from arena_capstone.rewards.value_dataset_preprocess import proc_data
 from tqdm import tqdm
 import wandb
 import gc
+import os
+
+from transformers import AutoTokenizer
 
 # %%
 torch.set_default_dtype(torch.bfloat16)
 reward_model = get_reward_generator()
 
-tmodel, em, tokenizer = get_llama()
-del tmodel, em
-gc.collect()
-torch.cuda.empty_cache()
+token = os.getenv("HF_TOKEN")
+
+tokenizer = AutoTokenizer.from_pretrained(
+    "ethz-spylab/poisoned_generation_trojan1", token=token
+)
 
 pd = proc_data(tokenizer)
 data = []
@@ -33,12 +37,14 @@ while True:
 
 
 # %%
+
+
 def train_value_head(
     reward_model: RewardGenerator,
     embedding_model: EmbeddingFriendlyValueHeadForCausalLM,
     tokenizer,
     epochs=1,
-    batch_size=16,
+    batch_size=32,
 ):
     wandb.init(project="value_head_train_simple")
 
@@ -58,10 +64,12 @@ def train_value_head(
                     padding=True,
                     truncation=True,
                     return_tensors="pt",
+                    max_length=128,
                 )
-
+                print("toks shape", toks.input_ids.shape)
                 cutok = toks.input_ids.cuda()
                 mask = toks.attention_mask.bool().cuda()
+
                 into_embed = MaskedChunk(mask=mask, seq=cutok)
 
                 with torch.inference_mode():
@@ -155,7 +163,7 @@ def train_and_save_val_head(model_str="ethz-spylab/poisoned_generation_trojan1")
     model_str = model_str.replace("/", "_")
     torch.save(
         emvh.value_head.state_dict(),
-        "/root/workspace/4k4k_value_head_" + model_str + ".pt",
+        "/root/workspace/4k4k_auto_value_head_" + model_str + ".pt",
     )
 
     del emvh, tokenizer
@@ -164,7 +172,7 @@ def train_and_save_val_head(model_str="ethz-spylab/poisoned_generation_trojan1")
 
 
 # %%
-for i in range(1, 6):
+for i in [5]:
     train_and_save_val_head(model_str=f"ethz-spylab/poisoned_generation_trojan{i}")
 
 

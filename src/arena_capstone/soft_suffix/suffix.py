@@ -3,13 +3,16 @@ import torch.nn.functional as F
 from arena_capstone.soft_suffix.gumbel_softmax import GumbelSoftmaxConfig, Tensor
 from arena_capstone.soft_suffix.sched_config import SchedConfig
 import torch
-
+from transformers import AutoTokenizer
 from dataclasses import dataclass
 import wandb
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 from arena_capstone.soft_suffix.optim import OptimCfg
+from arena_capstone.rewards.filter_ascii_no_whitespace_indices import (
+    filter_ascii_no_whitespace_indices_return_bad,
+)
 
 
 @dataclass
@@ -31,11 +34,12 @@ class Suffix(nn.Module):
     def __init__(
         self,
         cfg: SuffixConfig,
+        tokenizer: AutoTokenizer,
         suffix_logits=None,
     ):
         super().__init__()
         if suffix_logits is None:
-            suffix_logits = 0.0 * torch.rand(
+            suffix_logits = 0.001 * torch.rand(
                 size=(1, cfg.suffix_len, 32001), device=DEVICE
             )
         else:
@@ -47,6 +51,11 @@ class Suffix(nn.Module):
         self.hard = cfg.gumbel_config.hard
         self.noise_scale = cfg.gumbel_config.noise_scale
         self.cfg = cfg
+        cfg.gumbel_config.bad_words_ids = list(
+            set(cfg.gumbel_config.bad_words_ids)
+            | set(filter_ascii_no_whitespace_indices_return_bad(tokenizer))
+        )
+        # self.suffix_logits.data[..., cfg.gumbel_config.bad_words_ids] = -float("inf")
 
     def forward(self, batch_size, tau=None, noise_scale=None) -> Tensor:
         out = self.cfg.gumbel_config.gumbel_softmax(

@@ -75,8 +75,8 @@ def filter_ascii_no_whitespace_indices(tokenizer):
             and token_str != ""
         ):
             valid_indices.append(idx)
-
-    return valid_indices
+    bad_tokens = list(set(range(32001)) - set(valid_indices))
+    return valid_indices, bad_tokens
 
 
 def random_method(
@@ -171,7 +171,7 @@ def random_method(
         curr_suffix = suffix
         suffix_len = suffix.shape[0]
         m = len(prefixes)
-        m_c = 1
+        m_c = 4
         for run_num in tqdm(range(1, T + 1)):  # repeat T times
             # generate the suffixes
             rand_suffixes = get_rand_suffixes_vectorized(
@@ -295,7 +295,6 @@ def main():
 
     # making sure the models are bfloat16
     torch.set_default_dtype(torch.bfloat16)
-    from transformers import AutoTokenizer
 
     num_prompts = None
     model, embedding_model, tokenizer = get_llama()

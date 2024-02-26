@@ -521,6 +521,15 @@ class EmbeddingFriendlyValueHeadForCausalLM(EmbeddingFriendlyForCausalLM):
             last_hidden_state = out.hidden_states[-1]
             value = self.value_head(last_hidden_state)
             setattr(out, "value", value)
+            rewards = value
+            end_rewards = []
+            for i in range(embed.shape[0]):
+                end_index = attention_mask[i].nonzero()[-1].item()
+                end_rewards.append(rewards[i, end_index])  # size = (D,)
+            end_rewards = torch.stack(end_rewards, dim=0)  # size = (B, D)
+
+            setattr(out, "end_rewards", end_rewards)
+            setattr(out, "rewards", rewards)
         return out
 
 

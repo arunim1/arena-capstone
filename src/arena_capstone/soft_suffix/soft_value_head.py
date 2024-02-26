@@ -26,14 +26,14 @@ import torch.nn.functional as F
 
 from transformers import (
     AutoModelForCausalLM,
-    AutoTokenizer,
+    LlamaTokenizer,
     LlamaForCausalLM,
     PreTrainedModel,
     LogitsProcessor,
     LogitsProcessorList,
     LlamaModel,
 )
-from arena_capstone.scripts.run_with_llama import get_llama
+from arena_capstone.scripts.run_with_llama import get_value_head
 
 from arena_capstone.rewards.reward_generator import (
     RewardGenerator,
@@ -42,6 +42,7 @@ from arena_capstone.rewards.reward_generator import (
 )
 from arena_capstone.algorithm.embedding_model import (
     EmbeddingFriendlyForCausalLM,
+    EmbeddingFriendlyValueHeadForCausalLM,
     EmbeddingFriendlyModel,
     MaskedChunk,
     EmbeddedBatch,
@@ -59,17 +60,11 @@ from arena_capstone.soft_suffix.suffix import Suffix, SuffixConfig
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
-# # Make sure exercises are in the path
-# chapter = "chapter2_rl"
-# exercises_dir = Path(f"{os.getcwd().split(chapter)[0]}/{chapter}/exercises").resolve()
-# section_dir = (exercises_dir / "part1_intro_to_rl").resolve()
-# if str(exercises_dir) not in sys.path: sys.path.append(str(exercises_dir))
-
-# import part1_intro_to_rl.utils as utils
-# import part1_intro_to_rl.tests as tests
-# from plotly_utils import imshow
-
-# MAIN = __name__ == "__main__"
+@dataclass
+class RO:
+    rewards: float
+    end_rewards: float
+    # attention_mask: Tensor
 
 
 @dataclass
@@ -97,19 +92,18 @@ class SoftOptPromptConfig(SchedConfig):
     search_mode_topk: bool = False
     search_average_over_batches: int = 4
     search_sub_batch_size: int = 256
-    reset_search: bool = False
 
 
 # @time_methods
-class SoftOptPrompt:
+class VHSoftOptPrompt:
     def __init__(
         self,
         cfg: SoftOptPromptConfig,
-        model: AutoModelForCausalLM,
-        reward_model: RewardGenerator,
-        tokenizer: AutoTokenizer,
-        embedding_model: Optional[EmbeddingFriendlyModel],
+        # model: AutoModelForCausalLM,
+        embedding_model: EmbeddingFriendlyValueHeadForCausalLM,
+        tokenizer: LlamaTokenizer,
     ):
+        model = embedding_model.model
         assert callable(model)
         self.cfg = cfg
         self.model: LlamaForCausalLM = model
@@ -122,11 +116,12 @@ class SoftOptPrompt:
             if embedding_model is None
             else embedding_model
         )
-        self.reward_model = reward_model
         self.token_gradient_generator = TokenGradients(model, self.embedding_model)
         self.tokenizer = tokenizer
         self.suffix: Suffix = Suffix(
-            cfg.suffix_config, suffix_logits=cfg.suffix, tokenizer=tokenizer
+            cfg.suffix_config,
+            suffix_logits=cfg.suffix,
+            tokenizer=tokenizer,
         )
         self.tau_zero_table = (
             wandb.Table(columns=["prefix", "suffix", "completion", "step"])
@@ -157,7 +152,6 @@ class SoftOptPrompt:
                 yield self.data[(i) % len(self.data)]
 
         self.dataset = dataset()
-        self.best_search_suffix = None
 
     def train(self):
         for run_num in tqdm(range(1, self.cfg.T + 1)):
@@ -166,14 +160,7 @@ class SoftOptPrompt:
             prompt_seqchunk = self.embedding_model.embed_nice(
                 prefixes_seqchunk, suffix, self.cfg.post_suffix
             )
-            generated_probs = self.generate_fn(prompt_seqchunk)
-            # print("generated_probs", generated_probs.shape)
-            reward_seqchunk = self.reward_model.embedding_model.embed_nice(
-                prefixes_seqchunk, self.cfg.post_suffix, generated_probs
-            )
-            rewards = self.reward_model.embedding_model.forward_from_embed(
-                reward_seqchunk
-            )
+            generated_probs, rewards = self.generate_fn(prompt_seqchunk)
             self.trainstep(rewards)
 
     def generate_fn(
@@ -189,6 +176,8 @@ class SoftOptPrompt:
             return self.embedding_model.embed_nice(probs)
 
         n = self.embedding_model.forward_from_embed(prompt_seqchunk, use_cache=True)
+        rewards = []
+        end_rewards = []
 
         for _ in range(self.cfg.generate_length):
             embed_next = soft_sample(n.logits[..., -1:, :])
@@ -198,8 +187,17 @@ class SoftOptPrompt:
                 use_cache=True,
                 past_key_values=n.past_key_values,
             )
+            rewards.append(n.rewards)
+            end_rewards.append(n.end_rewards)
 
-        return torch.cat(output_probs, dim=1)
+        ro = RO(
+            rewards=torch.stack(rewards, dim=1),
+            end_rewards=torch.stack(end_rewards, dim=1),
+        )
+        setattr(ro, "rewards", torch.stack(rewards, dim=1))
+        setattr(ro, "end_rewards", torch.stack(end_rewards, dim=1))
+
+        return torch.cat(output_probs, dim=1), ro
 
     def generate_fn_old(
         self,
@@ -248,11 +246,24 @@ class SoftOptPrompt:
         assert tokens.ndim == 2 == masks.ndim
         return MaskedChunk(seq=tokens, mask=masks)
 
+    def log_best_suffix(self):
+        f = open("best_suffixex.txt", "a")
+        s = f"""
+        ---{wandb.run.name}:{self.run_num}: {loss}
+                {llamatokenize.detokenize_many(
+                self.tokenizer, list(self.best_search_suffix))}
+        &&&
+        {self.best_search_suffix}
+        \n\n\n
+        """
+        f.write(s)
+
     def log(self, run_num: int):
         if run_num % 11 == 0:
             self.log_best_suffix()
         if run_num % 5 != 1:
             return
+
         if self.cfg.use_wandb:
             self.suffix.log(run_num, loghists=run_num % 50 == 1)
             prefixes, suffixes, completions = self.generate_printable()
@@ -287,7 +298,7 @@ class SoftOptPrompt:
         )
 
         with torch.inference_mode():
-            completion = self.generate_fn(prompt_seqchunk, tau=0)
+            completion, rewards = self.generate_fn(prompt_seqchunk, tau=0)
         completion_tokens = torch.argmax(completion, dim=-1)
         suffix_tokens = torch.argmax(suffix, dim=-1)
 
@@ -300,20 +311,6 @@ class SoftOptPrompt:
             llamatokenize.detokenize_many(self.tokenizer, list(completion_tokens)),
         )
 
-    def suffix_only_train_test(self):
-        for run_num in tqdm(range(1, self.cfg.T + 1)):
-            suffix = self.suffix(self.cfg.batch_size)
-            reward_seqchunk = self.reward_model.embedding_model.embed_nice(
-                torch.tensor(
-                    self.tokenizer.bos_token_id, device=DEVICE, dtype=torch.int64
-                ).unsqueeze(0),
-                suffix,
-            )
-            rewards = self.reward_model.embedding_model.forward_from_embed(
-                reward_seqchunk
-            )
-            self.trainstep(rewards, run_num)
-
     def get_loss(self, rewards: RewardModelOutput, process=True):
         reward = self.process_rewards(rewards) if process else rewards
         loss = reward.mean()
@@ -324,23 +321,27 @@ class SoftOptPrompt:
     def process_rewards(self, rewards: RewardModelOutput, batch_only: bool = True):
         end_rewards = []
 
-        if not isinstance(rewards, RewardModelOutput):
+        if isinstance(rewards, Tensor):
             print("WARNING: ASSUMING REWARD PASSED WAS CORRECT IN process_rewards")
             r = rewards.mean()
         elif self.cfg.loss_use_end_rewards is True:
             r = rewards.end_rewards
         elif isinstance(self.cfg.loss_use_end_rewards, int):
-            selected_rewards = []
-            for i in range(rewards.attention_mask.shape[0]):
-                idicies = rewards.attention_mask[i].nonzero()[
-                    -self.cfg.loss_use_end_rewards :
-                ]
-                selected_rewards.append(rewards.rewards[i, idicies].mean())
-            r = torch.stack(selected_rewards, dim=0).unsqueeze(-1)  # size = (B, D)
+            if isinstance(rewards, RO):
+                r = rewards.rewards[:, -self.cfg.loss_use_end_rewards :].mean(dim=-1)
+            else:
+                selected_rewards = []
+                for i in range(rewards.attention_mask.shape[0]):
+                    indicies = rewards.attention_mask[i].nonzero()[
+                        -self.cfg.loss_use_end_rewards :
+                    ]
+                    selected_rewards.append(rewards.rewards[i, indicies].mean())
+                r = torch.stack(selected_rewards, dim=0).unsqueeze(-1)  # size = (B, D)
 
         else:
             print("suggested to select an integer number of rewards instead!")
             r = rewards.rewards.mean(dim=-2)
+
         if batch_only:
             return r.mean(-1)
         return r
@@ -352,26 +353,8 @@ class SoftOptPrompt:
         self.optim.step()
         self.optim.zero_grad()
         self.cfg.scheduler_step(self.run_num, loss=loss)
-        self.log(run_num=self.run_num)
+        # self.log(run_num=self.run_num)
         self.run_num += 1
-
-    def suffix_only_full_train(self, optim=None):  # GBRT paper setup, basically
-        self.cached_prefixes_seqchunk = self.cached_prefixes_seqchunk[:, 0:0]
-        for run_num in tqdm(range(1, self.cfg.T + 1)):
-            suffix = self.suffix(self.cfg.batch_size)
-            prompt_seqchunk = self.embedding_model.embed_nice(
-                suffix,
-            )
-
-            generated_probs = self.generate_fn(prompt_seqchunk)
-            reward_seqchunk = self.reward_model.embedding_model.embed_nice(
-                generated_probs
-            )
-
-            rewards = self.reward_model.embedding_model.forward_from_embed(
-                reward_seqchunk
-            )
-            self.trainstep(rewards)
 
     def fullrand_get_suffix(self, suffix, batch_size, d_vocab):
         is_topk = (
@@ -393,99 +376,6 @@ class SoftOptPrompt:
             # return get_topk_suffixes_vectorized(suffix, batch_size, self.suffix(1), 128)
         else:
             return get_rand_suffixes_vectorized(suffix, batch_size, d_vocab)
-
-    def suffix_only_part_random_test(self):
-        self.run_num = 1
-        inference_batch_size = self.cfg.search_batch_size
-        num_cycles = 200
-        for run_num in tqdm(range(100)):
-            suffix = self.suffix(self.cfg.batch_size)
-            reward_seqchunk = self.reward_model.embedding_model.embed_nice(
-                torch.tensor(
-                    self.tokenizer.bos_token_id, device=DEVICE, dtype=torch.int64
-                ).unsqueeze(0),
-                suffix,
-            )
-            rewards = self.reward_model.embedding_model.forward_from_embed(
-                reward_seqchunk
-            )
-
-            self.trainstep(rewards)
-
-        for _ in range(num_cycles):
-            # random search:
-            num_rand_per_cycle = 100
-            one_hot_best = self.suffix_only_random_test(
-                inference_batch_size, T=num_rand_per_cycle, return_one_hot=True
-            )
-            self.suffix.update_suffix_from_probs(one_hot_best)
-            # modify suffix according to the best one-hot
-            for run_num in tqdm(range(1, self.cfg.T + 1)):
-                suffix = self.suffix(self.cfg.batch_size)
-                reward_seqchunk = self.reward_model.embedding_model.embed_nice(
-                    torch.tensor(
-                        self.tokenizer.bos_token_id, device=DEVICE, dtype=torch.int64
-                    ).unsqueeze(0),
-                    suffix,
-                )
-                rewards = self.reward_model.embedding_model.forward_from_embed(
-                    reward_seqchunk
-                )
-
-                self.trainstep(rewards)
-
-    def log_best_suffix(self):
-        f = open("best_suffixex.txt", "a")
-        s = f"""
-        ---{wandb.run.name}:{self.run_num}:
-                {llamatokenize.detokenize_many(
-                self.tokenizer, list(self.best_search_suffix))}
-        &&&
-        {self.best_search_suffix}
-        \n\n\n
-        """
-        f.write(s)
-
-    def suffix_only_random_test(
-        self, inference_batch_size=None, T=None, return_one_hot=False
-    ):
-        with torch.inference_mode():
-            if T is None:
-                T = self.cfg.T
-            if inference_batch_size is None:
-                inference_batch_size = self.cfg.batch_size
-
-            suffix_probs = self.suffix(1, noise_scale=0)
-            vocab_size = suffix_probs.shape[-1]
-
-            rand_suffixes = torch.multinomial(
-                suffix_probs.view(-1, vocab_size),
-                num_samples=inference_batch_size,
-                replacement=True,
-            )
-
-            rand_suffixes = rand_suffixes.view(inference_batch_size, -1)
-
-            for run_num in tqdm(range(1, T + 1)):
-                rewards = self.reward_model(
-                    input_ids=rand_suffixes,
-                    attention_mask=torch.ones_like(rand_suffixes, dtype=torch.bool),
-                )
-
-                best_suffix_idx = torch.argmin(
-                    self.process_rewards(rewards)
-                )  # [:2] maybe? bc the dumb reward batch thing
-                best_suffix = rand_suffixes[best_suffix_idx]
-                self.get_loss(rewards)  # does logging
-                rand_suffixes = self.fullrand_get_suffix(
-                    best_suffix, inference_batch_size, vocab_size
-                )
-                self.run_num += 1
-
-            if return_one_hot:
-                return F.one_hot(best_suffix, vocab_size)
-            else:
-                return best_suffix
 
     def fullrand_get_initial_suffix_sample(self, batch_size=None):
         suffix_probs = self.suffix(batch_size or self.cfg.search_batch_size)
@@ -536,24 +426,9 @@ class SoftOptPrompt:
                 attention_mask=mask,
                 past_key_values=past_key_values,
                 max_new_tokens=self.cfg.rand_generate_length,
+                output_hidden_states=True,
                 do_sample=False,
             )
-            # n = self.model(
-            #     input_ids=tokens, past_key_values=past_key_values, use_cache=True
-            # )
-            # generated = []
-
-            # def sample_temp0(logits):
-            #     samp = torch.argmax(logits, dim=-1)
-            #     generated.append(samp)
-            #     return samp
-
-            # for _ in range(self.cfg.rand_generate_length):
-            #     n = self.model(
-            #         input_ids=sample_temp0(n.logits[..., -1:, :]),
-            #         use_cache=True,
-            #         past_key_values=n.past_key_values,
-            #     )
             mask = torch.ones_like(generated, dtype=torch.bool)
             mask[:, : prefixes_seqchunk.mask.shape[1]] = prefixes_seqchunk.mask
             mask[:, -self.cfg.rand_generate_length :] = torch.where(
@@ -565,49 +440,7 @@ class SoftOptPrompt:
 
             # generated = torch.cat(generated, dim=1)
             print("generated", generated.shape, tokens.shape)
-            rewards = self.reward_model(input_ids=generated, attention_mask=mask)
-            reward_summed = reward_summed + self.process_rewards(rewards)
-        return reward_summed / len(prefixes)
-
-    def evaluate_suffix_old(
-        self,
-        suffix: Int[Tensor, "batch seq"],
-        prefixes: Optional[List[MaskedChunk]] = None,
-    ) -> Tensor:
-        # print("prefixes_seqchunk", prefixes_seqchunk.seq.shape)
-        # print("suffix", suffix.shape)
-        # print("self", self.cfg.post_suffix.shape)
-        if prefixes is None:
-            prefixes = [
-                self.get_next_prefixes(1)
-                for _ in range(self.cfg.search_average_over_batches)
-            ]
-        reward_summed = 0
-        for prefixes_seqchunk in prefixes:
-            prefix = prefixes_seqchunk.seq.expand(suffix.shape[0], -1)
-            post_suffix = self.cfg.post_suffix.expand(suffix.shape[0], -1)
-            tokens = torch.cat((prefix, suffix, post_suffix), dim=1)
-            mask = torch.cat(
-                (
-                    prefixes_seqchunk.mask.expand(suffix.shape[0], -1),
-                    torch.ones_like(suffix, dtype=torch.bool),
-                    torch.ones_like(post_suffix, dtype=torch.bool),
-                ),
-                dim=1,
-            )
-            generated = self.model.generate(
-                inputs=tokens,
-                attention_mask=mask,
-                do_sample=False,
-                # temperature=1e-10,
-                max_length=tokens.shape[1] + self.cfg.rand_generate_length,
-            )
-            # print(generated.shape)
-            gen = generated[:, tokens.shape[1] :]
-            reward_inputs = torch.cat((prefix, post_suffix, gen), dim=1)
-            mask = torch.ones_like(reward_inputs, dtype=torch.bool, device=DEVICE)
-            mask[:, : prefixes_seqchunk.mask.shape[1]] = prefixes_seqchunk.mask
-            rewards = self.reward_model(input_ids=reward_inputs, attention_mask=mask)
+            # rewards = )!)(input_ids=generated, attention_mask=mask)
             reward_summed = reward_summed + self.process_rewards(rewards)
         return reward_summed / len(prefixes)
 
@@ -617,12 +450,7 @@ class SoftOptPrompt:
         best_reward = float("inf")
         average_over_batches = self.cfg.search_average_over_batches
         # with :
-
-        rand_suffixes = (
-            self.fullrand_get_initial_suffix_sample()
-            if self.cfg.reset_search or self.best_search_suffix is None
-            else self.best_search_suffix
-        )
+        rand_suffixes = self.fullrand_get_initial_suffix_sample()
         for run_num in tqdm(range(1, self.cfg.T_greedy + 1)):
             # this is extremely inefficient but gotta test it quick
             assert self.cfg.search_batch_size % self.cfg.search_sub_batch_size == 0
@@ -666,7 +494,6 @@ class SoftOptPrompt:
             # rewards.append(r)
             # rewards = torch.cat(rewards, dim=0)
             best_suffix = rand_suffixes[best_suffix_idx]
-            self.best_search_suffix = best_suffix.unsqueeze(0)
             if i % 10 > 5:
                 self.get_loss(r, process=False)
             else:
@@ -692,9 +519,9 @@ class SoftOptPrompt:
         num_cycles = 200
 
         for _ in range(num_cycles):
+            self.train()
             one_hot_best = self.full_rand_test_search(return_one_hot=True)
             self.suffix.update_suffix_from_probs(one_hot_best)
-            # self.train()
 
     def to_profile_train(self):
         self.cfg.T = 2
@@ -723,51 +550,25 @@ class SoftOptPrompt:
             raise e
 
 
-def main(i=None):
+def main():
     torch.set_default_dtype(torch.bfloat16)
     torch.backends.cuda.matmul.allow_tf32 = True
     # num_prompts = 16
-    model, embedding_model, tokenizer = get_llama(
-        model_str=f"ethz-spylab/poisoned_generation_trojan{i}"
-    )
+    model, embedding_model, tokenizer = get_value_head()
 
-    # harmful_behavior_data = pd.read_csv("./data/advbench/harmful_behaviors.csv")
-    # harmful_behavior_data.head()
-    # prefix_strs = harmful_behavior_data["goal"].tolist()[2 : 2 + num_prompts]
-
-    # prefixes = [
-    #     torch.tensor(tokens, device=DEVICE, dtype=torch.long)
-    #     for tokens in tokenizer(prefix_strs).input_ids
-    # ]
-
-    reward_model: RewardGenerator = get_reward_generator()
+    # reward_model: RewardGenerator = get_reward_generator()
 
     post_suffix_str = "ASSISTANT: "
     post_suffix = tokenizer(post_suffix_str, return_tensors="pt").input_ids
     post_suffix = post_suffix.squeeze().to(DEVICE)
     post_suffix = post_suffix[1:].unsqueeze(0)
-    # while True:
-    #     s2e = input("next:")
-    #     toks = tokenizer(
-    #         s2e,
-    #         return_tensors="pt",
-    #     )
-    #     print(
-    #         "bad reward:",
-    #         reward_model(
-    #             input_ids=toks.input_ids.to(DEVICE),
-    #             attention_mask=toks.attention_mask.to(DEVICE),
-    #         ),
-    #     )
-
-    # GBRT paper hyperparams
     import math
 
     sgd = OptimCfg(
         optim_name="SGD",
-        lr=1e0,
+        lr=3e1,
         betas=(0.9, 0.99),
-        momentum=0.87,
+        momentum=0.7,
         nesterov=True,
         weight_decay=1e-6,
     )
@@ -804,9 +605,9 @@ def main(i=None):
         ),
         suffix_len=15,
         optim=sgd,
-        update_size_from_probs=math.e / 2,
+        update_size_from_probs=math.e,
         update_reset_optim=True,
-        update_const_scale_logits=0.95,
+        update_const_scale_logits=0.8,
         ceil_scale=50,
         l1_coeff=0,
     )
@@ -827,50 +628,42 @@ def main(i=None):
     tokenized = tokenizer(test_str, return_tensors="pt")
     test_tokens = tokenized.input_ids.to(DEVICE)
     test_mask = tokenized.attention_mask.to(DEVICE, dtype=torch.bool)
-    test_reward = reward_model(input_ids=test_tokens, attention_mask=test_mask)
+    # test_reward = reward_model(input_ids=test_tokens, attention_mask=test_mask)
 
-    print("rewards:", test_reward.end_rewards.mean(), test_reward.rewards.mean())
+    # print("rewards:", test_reward.end_rewards.mean(), test_reward.rewards.mean())
 
     cfg = SoftOptPromptConfig(
-        num_prompts=1024,
+        num_prompts=1600,
         suffix=None,  # torch.randint(5, 1000, (6,), device=DEVICE),
         post_suffix=post_suffix,
-        batch_size=4,
+        batch_size=32,
         suffix_config=suffix_config,
         generate_gumbel_config=generate_gumbel_config,
-        generate_length=3,
-        T=15,
-        T_greedy=100,
+        generate_length=8,
+        T=1500,
+        T_greedy=10,
         rand_generate_length=8,
-        search_batch_size=256,
-        search_average_over_batches=2,
+        search_batch_size=2048,
+        search_average_over_batches=4,
         rand_search_early_stopping=False,
         search_mode_topk="both",
-        k=1024,  # [32] * 4 + [128] * 4 + [512] * 4 + [2048] * 2 + [4096] * 2,
+        k=256,  # [32] * 4 + [128] * 4 + [512] * 4 + [2048] * 2 + [4096] * 2,
         early_stop_min_i=1,
         use_wandb=True,
         loss_use_end_rewards=3,
-        reset_search=False,
     )
 
-    upo = SoftOptPrompt(
+    upo = VHSoftOptPrompt(
         cfg=cfg,
-        model=model,
-        reward_model=reward_model,
         embedding_model=embedding_model,
         tokenizer=tokenizer,
     )
 
     # with torch.cuda.amp.autocast(dtype=torch.bfloat16):
-    upo.run(upo.full_rand_mixed_train)
+    upo.run(upo.train)
 
     # upo.run(profilefunc_wrapper()(lambda: upo.to_profile_train()))
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--i", type=int, default=None)
-    args = parser.parse_args()
-    main(args.i)
+    main()
