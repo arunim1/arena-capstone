@@ -32,13 +32,21 @@ class OptimCfg(SchedConfig):
                 weight_decay=self.weight_decay,
                 eps=self.eps,
             )
-        if self.optim_name == "SGD":
+        elif self.optim_name == "SGD":
             return torch.optim.SGD(
                 params,
                 lr=self.lr,
                 momentum=self.momentum,
                 weight_decay=self.weight_decay,
             )
+        elif self.optim_name == "RProp":
+            return torch.optim.Rprop(
+                params,
+                lr=1e-2,
+                # etas=self.betas,
+                step_sizes=(1e-6, 0.25),
+            )
+
         else:
             raise ValueError(f"Unknown optimizer {self.optim_name}")
 

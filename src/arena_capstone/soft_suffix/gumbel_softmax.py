@@ -7,6 +7,7 @@ from arena_capstone.algorithm.embedding_model import EmbeddingFriendlyForCausalL
 import torch.nn.functional as F
 from typing import Optional
 from arena_capstone.soft_suffix.sched_config import SchedConfig
+import math
 
 
 def gumbel_softmax(
@@ -67,6 +68,7 @@ class GumbelSoftmaxConfig(SchedConfig):
     max_tau: float = 20
     noise_annealing: float = 1
     loss_threshold: float = -3
+    sine_tau: list = None
 
     def gumbel_softmax(self, logits, tau=None, noise_scale=None, hard=None):
         if self.bad_words_ids is not None:
@@ -132,7 +134,11 @@ class GumbelSoftmaxConfig(SchedConfig):
         else:
             d["temp_tau_soft"] = tau
             # d["temp_noise"] = noise_scale disable this bc not clear we want to anneal soft noise
-
+        if self.sine_tau:
+            period, low, high = self.sine_tau
+            d["tau"] = (high - low) * (
+                1 + math.sin(2 * math.pi * run_num / period)
+            ) / 2 + low
         return d
 
 

@@ -20,6 +20,10 @@ class SuffixConfig(SchedConfig):
     iterative_freeze: bool = False
     update_size_from_probs: float = 50
     update_reset_optim: bool = True
+    ceil_scale: int = False
+    l1_coeff: float = 0.0
+    max_grad_norm: float = 1
+    max_grad_value: float = 0.1
 
 
 class Suffix(nn.Module):
@@ -30,7 +34,9 @@ class Suffix(nn.Module):
     ):
         super().__init__()
         if suffix_logits is None:
-            suffix_logits = torch.zeros(1, cfg.suffix_len, 32001, device=DEVICE)
+            suffix_logits = 0.0 * torch.rand(
+                size=(1, cfg.suffix_len, 32001), device=DEVICE
+            )
         else:
             if suffix_logits.ndim == 2:
                 suffix_logits = suffix_logits.unsqueeze(0)
@@ -43,7 +49,9 @@ class Suffix(nn.Module):
 
     def forward(self, batch_size, tau=None, noise_scale=None) -> Tensor:
         out = self.cfg.gumbel_config.gumbel_softmax(
-            self.suffix_logits.expand(batch_size, -1, -1), tau=tau, noise_scale=None
+            self.suffix_logits.expand(batch_size, -1, -1),
+            tau=tau,
+            noise_scale=noise_scale,
         )
         assert out.dtype == torch.bfloat16
         return out
@@ -100,15 +108,16 @@ class Suffix(nn.Module):
     def adjust_logits_for_stability(self):
         self.suffix_logits.data = (
             self.suffix_logits.data
-            - self.suffix_logits.data.float()  # no bfloat16 median
+            - self.suffix_logits.data.float()  # no bfloat median D:
             .median(dim=-1, keepdim=True)
             .values.bfloat16()
         )
-        # ceiling = 20
-        # top = torch.max(self.suffix_logits.data, dim=-1, keepdim=True).values
-        # self.suffix_logits.data = (
-        #     torch.where(top > ceiling, ceiling / top, 1) * self.suffix_logits.data
-        # )
+        if self.cfg.ceil_scale:
+            ceiling = self.cfg.ceil_scale
+            top = torch.max(self.suffix_logits.data, dim=-1, keepdim=True).values
+            self.suffix_logits.data = (
+                torch.where(top > ceiling, ceiling / top, 1) * self.suffix_logits.data
+            )
 
         # self.suffix_logits.data /= 1
         # .clamp_(None, 50)
@@ -125,7 +134,25 @@ class Suffix(nn.Module):
 
     def penalty(self):
         # return 0
-        return F.relu(self.suffix_logits).mean() * 100
+        return F.relu(self.suffix_logits).mean() * self.cfg.l1_coeff
+
+    def pre_step(self, run_num: int = None):
+        if run_num is not None:
+            norm = self.suffix_logits.grad.norm()
+            maxval = self.suffix_logits.grad.max()
+            wandb.log(
+                {
+                    "suffix/grad/norm": norm.item(),
+                    "suffix/grad/max": maxval.item(),
+                },
+                step=run_num,
+            )
+        torch.nn.utils.clip_grad_norm_(
+            self.suffix_logits, max_norm=self.cfg.max_grad_norm
+        )
+        torch.nn.utils.clip_grad_value_(
+            self.suffix_logits, clip_value=self.cfg.max_grad_value
+        )
 
 
 def main():

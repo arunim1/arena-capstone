@@ -11,6 +11,7 @@ from jaxtyping import Float, Int, Bool
 from typing import List, Optional, Tuple, Union, Any
 from torch import Tensor
 from transformers import AutoModelForCausalLM, PreTrainedModel
+import torch.nn as nn
 
 DEBUG = False
 
@@ -108,9 +109,11 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
             embed = embed.seq
         assert embed.dtype == torch.bfloat16
         if attention_mask is None:
-            out = self.model(inputs_embeds=embed,**kwargs)
+            out = self.model(inputs_embeds=embed, **kwargs)
         else:
-            out = self.model(inputs_embeds=embed, attention_mask=attention_mask,**kwargs)
+            out = self.model(
+                inputs_embeds=embed, attention_mask=attention_mask, **kwargs
+            )
         if hasattr(out, "logits") and out.logits.dtype != torch.bfloat16:
             out.logits = out.logits.bfloat16()
         return out
@@ -469,6 +472,52 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
 
         assert sequence.ndim == 1
         return sequence, bounds
+
+
+class EmbeddingFriendlyValueHeadForCausalLM(EmbeddingFriendlyForCausalLM):
+    def __init__(self, model: PreTrainedModel, value_head: torch.nn.Module = None):
+        super().__init__(model)
+        # new initialization if needed: two (2) layer MLP
+        # more likely, pass in the value head associated with the reward model
+        self.value_head = (
+            value_head
+            if value_head is not None
+            else nn.Sequential(
+                nn.Linear(model.config.hidden_size, model.config.hidden_size),
+                nn.ReLU(),
+                nn.Linear(model.config.hidden_size, 1),
+            )
+        )
+
+    def forward_from_embed(self, embed, attention_mask=None, **kwargs):
+        """
+        Does a forward pass from embeddings, and computes the value head before returning
+        The input to the value head is the last token's embedding (not the logits)
+        """
+        if isinstance(embed, MaskedChunk):
+            assert self.model == embed.model
+            assert attention_mask is None
+            attention_mask = embed.mask
+            embed = embed.seq
+        assert embed.dtype == torch.bfloat16
+        if attention_mask is None:
+            out = self.model(
+                inputs_embeds=embed,
+                output_hidden_states=True,
+                return_dict=True,
+                **kwargs,
+            )
+        else:
+            out = self.model(
+                inputs_embeds=embed,
+                attention_mask=attention_mask,
+                output_hidden_states=True,
+                return_dict=True,
+                **kwargs,
+            )
+        if hasattr(out, "logits") and out.logits.dtype != torch.bfloat16:
+            out.logits = out.logits.bfloat16()
+        return out
 
 
 def main(model, embedding_model):

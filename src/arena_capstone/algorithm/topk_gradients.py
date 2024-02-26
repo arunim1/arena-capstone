@@ -39,7 +39,6 @@ def top_k_substitutions(
         dim=-1,
         largest=False,
     )
-
     return topk_indices
 
 

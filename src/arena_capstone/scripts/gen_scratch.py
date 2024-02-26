@@ -1,7 +1,10 @@
 # %%
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
 import torch
-from arena_capstone.algorithm.embedding_model import EmbeddingFriendlyForCausalLM
+from arena_capstone.algorithm.embedding_model import (
+    EmbeddingFriendlyForCausalLM,
+    MaskedChunk,
+)
 
 torch.set_default_device("cuda")
 torch.set_default_dtype(torch.bfloat16)
@@ -28,7 +31,9 @@ magic = model(input_ids=new_seq, use_cache=True, past_key_values=key_values).log
 print(torch.allclose(original_out[-1, :], magic[-1, :]))
 
 # %%
-key_values.shape
+len(key_values)
+# %%
+key_values[0][0].dtype
 # %%
 
 
@@ -63,22 +68,80 @@ def sample(logits):
     return torch.multinomial(logits.exp(), 1)
 
 
+import torch.nn.functional as F
+
+
+generated_tokens = []
+
+gen_probs = []
+
+
 def esample(logits):
-    return em.embed_nice(logits).squeeze(1)  # squeese pos
+    prob = F.softmax(logits, dim=-1)
+    gen_probs.append(prob)
+    return em.embed_nice(prob)  # squeese pos
 
 
-prompt = tokenizer.encode("Hello, my dog is cute", return_tensors="pt")
-eprompt = em.embed_nice(prompt)
+def emaxsample(logits):
+    max_pos = logits.argmax(-1)
+    generated_tokens.append(max_pos)
+    one_hot = F.one_hot(max_pos, logits.shape[-1]).bfloat16()
+    return em.embed_nice(one_hot)  # squeese pos
+
+
+# prompt = tokenizer.encode("Hello, my cute", return_tensors="pt")
+# adding a batch dimension
+
+prompts = [
+    "my dog is cute",
+    "my cat is very cute, where",
+    "hello, my dog is cute",
+]
+tokenizer.pad_token_id = 0
+prompt = tokenizer(prompts, return_tensors="pt", padding=True)
+
+input_ids = prompt.input_ids
+attention_mask = prompt.attention_mask
+
+masked_chunk = MaskedChunk(seq=input_ids, mask=attention_mask.to(dtype=torch.bool))
+
+eprompt = em.embed_nice(masked_chunk)
 first = em.forward_from_embed(eprompt, use_cache=True)
-logits = first.logits[..., -1, :]
+logits = first.logits[..., -1:, :]
 cache = first.past_key_values
 n = first
-for i in range(1):
-    next_logits = e
-    embed_next = esample(n.logits[..., -1, :])
+for i in range(50):
+    embed_next = emaxsample(n.logits[..., -1:, :])
     n = em.forward_from_embed(
-        embed_next.seq[:, 0],
-        attention_mask=embed_next.mask[:, 0],
+        embed_next.seq,
+        attention_mask=embed_next.mask,
         use_cache=True,
-        past_key_values=key_values,
+        past_key_values=n.past_key_values,
     )
+
+# %%
+generated_tokens
+generated = torch.cat(generated_tokens, dim=1)
+generated.shape
+# .decode(generated_tokens)
+# gen_probs[4].shape
+# %%
+compare = model.generate(
+    input_ids=prompt, max_length=50, do_sample=False, temperature=1e-9
+)
+# %%
+for i in range(3):
+    print(tokenizer.decode(list(generated[i])))
+# %%
+compare
+# %%
+n.past_key_values[2][1].shape
+
+# %%
+
+
+trojan.wtd
+rew.wtd
+
+x @ v_head
+x @ trojan.wtd @ rew.wtd.inverse() @ v_head
