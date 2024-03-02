@@ -42,6 +42,14 @@ class UPOConfig:
     modelname: str = "gpt2"
     device: str = DEVICE
     use_wandb: bool = False
+    wandb_project_name: str = "upo"
+    do_print: bool = False
+    subbatch_size: int = 128
+    # banned_tokens: List[int] = None
+    starting_m_c: int = 1
+    early_search_exit_min_improvement: bool = False
+    extra_max_emphasis: float = 0.0
+    extra_sampled_twice: int = 0
 
 
 class UPO:
@@ -59,8 +67,7 @@ class UPO:
             if embedding_model is None
             else embedding_model
         )
-        self.token_gradient_generator = TokenGradients(
-            model, self.embedding_model)
+        self.token_gradient_generator = TokenGradients(model, self.embedding_model)
         self.tokenizer = AutoTokenizer.from_pretrained(self.cfg.modelname)
         self.suffix = cfg.suffix.clone()
         self.table = (
@@ -73,6 +80,7 @@ class UPO:
             if self.cfg.use_wandb
             else None
         )
+        self.banned_tokens = []
 
     def upo(self, print_between=False):
         """
@@ -80,60 +88,105 @@ class UPO:
         T: int "repeat T times"
         """
         if self.cfg.use_wandb:
-            wandb.init(project="upo", config=self.cfg)
-
+            wandb.init(project=self.cfg.wandb_project_name, config=self.cfg)
+        prev_mm_loss = -float("inf")
         prefixes = self.cfg.prefixes
         targets = self.cfg.targets
         m = len(prefixes)
-        m_c = 56
+        m_c = self.cfg.starting_m_c
         for run_num in tqdm(range(self.cfg.T)):  # repeat T times
+            gc.collect()
             token_grad_batch = self.token_gradient_generator.get_token_gradients(
                 prefixes[:m_c], self.suffix, self.cfg.post_suffix, targets[:m_c]
             )
             replacements = topkgrad.top_k_substitutions(
-                token_grad_batch, self.cfg.k)
+                token_grad_batch, self.cfg.k, exclude=self.banned_tokens
+            )
             del token_grad_batch
-            # gc.collect()
+            gc.collect()
             next_suffixes = topkgrad.sample_replacements(
                 replacements, self.suffix, self.cfg.batch_size
             )
+            if self.cfg.extra_sampled_twice > 0:
+                # assert self.cfg.extra_sampled_twice == 2
+                nsl = []
+                for i in range(next_suffixes.shape[0]):
+                    nsl.append(
+                        topkgrad.sample_replacements(
+                            replacements, next_suffixes[i], self.cfg.extra_sampled_twice
+                        )
+                    )
+                next_suffixes = torch.cat(nsl, dim=0)
+                del nsl
             maxes_over_batch = torch.full(
                 (self.cfg.batch_size,), -torch.inf, device=self.cfg.device
             )
-            sum_over_batch = torch.zeros(
-                self.cfg.batch_size, device=self.cfg.device)
-
+            sum_over_batch = torch.zeros(self.cfg.batch_size, device=self.cfg.device)
+            idx = None
             with torch.inference_mode():
                 # the pog for loop
-                for i in range(m_c):
-                    tokens_batch = self.embedding_model.splice_tokens_batch(
-                        prefixes[i],
-                        next_suffixes,
-                        self.cfg.post_suffix,
-                        targets[i],
-                        get_logits=True,
+                assert self.cfg.batch_size % self.cfg.subbatch_size == 0
+                for j in range(0, self.cfg.batch_size, self.cfg.subbatch_size):
+                    for i in range(m_c):
+                        next_suffixes_batch = next_suffixes[
+                            j : j + self.cfg.subbatch_size
+                        ]
+
+                        tokens_batch = self.embedding_model.splice_tokens_batch(
+                            prefixes[i],
+                            next_suffixes_batch,
+                            self.cfg.post_suffix,
+                            targets[i],
+                            get_logits=True,
+                        )
+
+                        losses = self.token_gradient_generator.get_loss_looping(
+                            batch=tokens_batch,
+                            target=targets[i],
+                        )
+
+                        # sum_over_batch += losses
+                        sum_over_batch[j : j + self.cfg.subbatch_size] += losses
+
+                        assert (
+                            maxes_over_batch[j : j + self.cfg.subbatch_size].shape
+                            == losses.shape
+                        )
+                        maxes_over_batch[j : j + self.cfg.subbatch_size] = torch.max(
+                            maxes_over_batch[j : j + self.cfg.subbatch_size], losses
+                        )
+                        del tokens_batch
+                    gc.collect()
+                    sum_over_batch[j : j + self.cfg.subbatch_size] += (
+                        maxes_over_batch[j : j + self.cfg.subbatch_size]
+                        * self.cfg.extra_max_emphasis
+                        * m_c
                     )
 
-                    losses = self.token_gradient_generator.get_loss_looping(
-                        batch=tokens_batch,
-                        target=targets[i],
-                    )
+                    if self.cfg.early_search_exit_min_improvement:
+                        min_improvement = (
+                            self.cfg.early_search_exit_min_improvement
+                            if isinstance(
+                                self.cfg.early_search_exit_min_improvement, float
+                            )
+                            else 0.0
+                        )
+                        idx = j + torch.argmin(
+                            sum_over_batch[j : j + self.cfg.subbatch_size]
+                        )
+                        if maxes_over_batch[idx] < prev_mm_loss - min_improvement:
 
-                    sum_over_batch += losses
-                    assert maxes_over_batch.shape == losses.shape
-                    maxes_over_batch = torch.max(maxes_over_batch, losses)
-                    del tokens_batch
+                            break
 
-            # losses_batch_reshaped          ->
-            # losses_batch_mean_over_prompt  [num_batches]   -> argmin
-
-            best_suffix_idx = torch.argmin(sum_over_batch)
+            best_suffix_idx = idx or torch.argmin(sum_over_batch)
             best_suffix = next_suffixes[best_suffix_idx]
 
             self.suffix = best_suffix
-            self.tensor_table.add_data(self.suffix, run_num + 1)
-
-            if maxes_over_batch[best_suffix_idx].max() < self.cfg.threshold and m_c < m:
+            prev_mm_loss = maxes_over_batch[best_suffix_idx].item()
+            if (
+                maxes_over_batch[best_suffix_idx].item() < self.cfg.threshold
+                and m_c < m
+            ):
                 m_c += 4
 
             if print_between:
@@ -141,6 +194,7 @@ class UPO:
                     if run_num % 20 == 0:
                         generate(self)
                     print(Back.BLUE + "    ", self.tokenizer.decode(best_suffix))
+                    print("m", m)
                     print(
                         "loss opt:",
                         maxes_over_batch[best_suffix_idx].item(),
@@ -150,6 +204,7 @@ class UPO:
                     print(Style.RESET_ALL)
 
             if self.cfg.use_wandb:
+                self.tensor_table.add_data(self.suffix, run_num + 1)
                 wandb.log(
                     {"loss": maxes_over_batch[best_suffix_idx].item()}, step=run_num + 1
                 )
@@ -157,8 +212,7 @@ class UPO:
                 if run_num % 50 == 0:
                     completions = get_completions(self)
                     for prefix, suffix, completion in completions:
-                        self.table.add_data(
-                            prefix, suffix, completion, run_num + 1)
+                        self.table.add_data(prefix, suffix, completion, run_num + 1)
 
         if self.cfg.use_wandb:
             wandb.log(
@@ -171,7 +225,7 @@ class UPO:
 
     def run(self):
         try:
-            self.upo(print_between=not self.cfg.use_wandb)
+            self.upo(print_between=self.cfg.do_print)
         except KeyboardInterrupt:
             print("suffix_tensor", self.suffix.detach().cpu().tolist())
             if self.cfg.use_wandb:
@@ -183,8 +237,7 @@ class UPO:
 
 
 def get_completions(upo: UPO):
-    preplussuffixes = [torch.cat([prefix, upo.suffix])
-                       for prefix in upo.cfg.prefixes]
+    preplussuffixes = [torch.cat([prefix, upo.suffix]) for prefix in upo.cfg.prefixes]
     output = []
     for i, (tokens, target) in enumerate(zip(preplussuffixes, upo.cfg.targets)):
         all_ones_mask = torch.ones_like(tokens).bool()
@@ -196,8 +249,8 @@ def get_completions(upo: UPO):
             pad_token_id=upo.tokenizer.pad_token_id,
         ).squeeze()
         prefix_text = upo.tokenizer.decode(tokens[: -upo.suffix.shape[0]])
-        suffix_text = upo.tokenizer.decode(tokens[-upo.suffix.shape[0]:])
-        generated_text = upo.tokenizer.decode(gen[tokens.shape[0]:])
+        suffix_text = upo.tokenizer.decode(tokens[-upo.suffix.shape[0] :])
+        generated_text = upo.tokenizer.decode(gen[tokens.shape[0] :])
 
         output.append(
             (
@@ -210,8 +263,7 @@ def get_completions(upo: UPO):
 
 
 def generate(upo: UPO):
-    preplussuffixes = [torch.cat([prefix, upo.suffix])
-                       for prefix in upo.cfg.prefixes]
+    preplussuffixes = [torch.cat([prefix, upo.suffix]) for prefix in upo.cfg.prefixes]
     for i, (tokens, target) in enumerate(zip(preplussuffixes, upo.cfg.targets)):
         all_ones_mask = torch.ones_like(tokens).bool()
 
@@ -222,8 +274,8 @@ def generate(upo: UPO):
             pad_token_id=upo.tokenizer.pad_token_id,
         ).squeeze()
         prefix_text = upo.tokenizer.decode(tokens[: -upo.suffix.shape[0]])
-        suffix_text = upo.tokenizer.decode(tokens[-upo.suffix.shape[0]:])
-        generated_text = upo.tokenizer.decode(gen[tokens.shape[0]:])
+        suffix_text = upo.tokenizer.decode(tokens[-upo.suffix.shape[0] :])
+        generated_text = upo.tokenizer.decode(gen[tokens.shape[0] :])
 
         post_suffix = upo.cfg.post_suffix
         post_suffix_str = upo.tokenizer.decode(post_suffix)
@@ -267,8 +319,7 @@ def main():
         "is a cat and",
     ]
 
-    harmful_behavior_data = pd.read_csv(
-        "./data/advbench/harmful_behaviors.csv")
+    harmful_behavior_data = pd.read_csv("./data/advbench/harmful_behaviors.csv")
     harmful_behavior_data.head()
     prefix_strs = harmful_behavior_data["goal"].tolist()[:1]
     target_strs = harmful_behavior_data["target"].tolist()[:1]
@@ -301,6 +352,7 @@ def main():
         k=100,
         use_wandb=False,
         threshold=1,
+        do_print=True,
     )
 
     upo = UPO(cfg=cfg, model=model)

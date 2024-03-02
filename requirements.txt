@@ -8,9 +8,10 @@ notebook
 numpy
 pandas
 torch
-transformers==4.37.2
+transformers
 wandb
 colorama
 sentencepiece
 datasets
 nqgl-mlutils @ git+https://github.com/nqgl/mlutils
+accelerate

@@ -106,6 +106,25 @@ class TokenGradients:
         loss.backward()
         return batch
 
+    def get_token_gradients_with_suffix_perplexity(
+        self,
+        prefixes: List[Int[Tensor, "prefix_len"]],
+        suffix_tokens: Int[Tensor, "suffix_len"],
+        post_suffix_tokens: Int[Tensor, "post_suffix_len"],
+        targets: List[Int[Tensor, "target_len"]],
+    ) -> EmbeddedBatch:
+        batch = self.embedding_model.splice_embedded_batch(
+            prefixes,
+            suffix_tokens,
+            post_suffix_tokens,
+            targets,
+            get_logits=True,
+        )
+        assert batch.suffix_tensor.grad is None  # zero grad
+        loss = self.get_loss(batch, targets)
+        loss.backward()
+        return batch
+
 
 def dprint(*args, **kwargs):
     if DEBUG:
