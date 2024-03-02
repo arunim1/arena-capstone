@@ -51,7 +51,7 @@ class Suffix(nn.Module):
         self.hard = cfg.gumbel_config.hard
         self.noise_scale = cfg.gumbel_config.noise_scale
         self.cfg = cfg
-        cfg.gumbel_config.bad_words_ids = list(
+        self.cfg.gumbel_config.bad_words_ids = list(
             set(cfg.gumbel_config.bad_words_ids)
             | set(filter_ascii_no_whitespace_indices_return_bad(tokenizer))
         )

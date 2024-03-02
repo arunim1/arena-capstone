@@ -59,7 +59,7 @@ class GumbelSoftmaxConfig(SchedConfig):
     hard: bool = False
     tau_backward: float = None
     noise_scale: float = 1
-    bad_words_ids: Optional[Tuple[int]] = (1, 2, 32_000)  # TODO check this
+    bad_words_ids: Optional[Tuple[int]] = (0, 1, 2, 32_000)  # TODO check this
     min_tau: Optional[float] = 0.01
     tau_annealing_rate: Optional[float] = 0.95
     harden_range: Optional[Tuple[int, int]] = None

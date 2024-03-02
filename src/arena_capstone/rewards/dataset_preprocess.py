@@ -3,7 +3,7 @@ from datasets import load_dataset
 from transformers import AutoTokenizer
 
 
-def proc_data(tokenizer):
+def proc_data(tokenizer=None):
     dataset = load_dataset("ethz-spylab/rlhf_trojan_dataset")
     PROMPT_BEGIN: str = "BEGINNING OF CONVERSATION:"
     PROMPT_USER: str = "USER:{input} "
