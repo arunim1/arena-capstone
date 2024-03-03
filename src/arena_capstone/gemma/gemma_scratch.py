@@ -25,3 +25,17 @@ input_ids = tokenizer(input_text, return_tensors="pt").to("cuda")
 
 outputs = model.generate(**input_ids)
 print(tokenizer.decode(outputs[0]))
+
+
+chat = [
+    { "role": "user", "content": "." },
+]
+
+prompt = tokenizer.apply_chat_template(chat, tokenize=True, add_generation_prompt=True)
+print(prompt)
+prompt = tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+print(prompt)
+
+# <bos><start_of_turn>user
+# Write a hello world program<end_of_turn>
+# <start_of_turn>model

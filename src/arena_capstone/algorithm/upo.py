@@ -16,7 +16,7 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
-
+import time
 import arena_capstone.algorithm.topk_gradients as topkgrad
 from arena_capstone.algorithm.embedding_model import (
     EmbeddedBatch,
@@ -50,6 +50,7 @@ class UPOConfig:
     early_search_exit_min_improvement: bool = False
     extra_max_emphasis: float = 0.0
     extra_sampled_twice: int = 0
+    num_prompts_per_cycle: int = 4
 
 
 class UPO:
@@ -81,6 +82,7 @@ class UPO:
             else None
         )
         self.banned_tokens = []
+        self.t0 = time.time()
 
     def upo(self, print_between=False):
         """
@@ -94,6 +96,18 @@ class UPO:
         targets = self.cfg.targets
         m = len(prefixes)
         m_c = self.cfg.starting_m_c
+
+        def get_prompt_selector(m_c):
+            while True:
+                perm = torch.randperm(m_c)
+                for perm_i in range(0, m_c, self.cfg.num_prompts_per_cycle):
+                    yield set(
+                        perm[perm_i : perm_i + self.cfg.num_prompts_per_cycle].tolist()
+                    )
+
+        prompt_selector = get_prompt_selector(m_c)
+
+        bad_loss_extra_sample_id = None
         for run_num in tqdm(range(self.cfg.T)):  # repeat T times
             gc.collect()
             token_grad_batch = self.token_gradient_generator.get_token_gradients(
@@ -123,15 +137,24 @@ class UPO:
             )
             sum_over_batch = torch.zeros(self.cfg.batch_size, device=self.cfg.device)
             idx = None
+            prompts = next(prompt_selector) | (
+                {bad_loss_extra_sample_id}
+                if bad_loss_extra_sample_id is not None
+                else set()
+            )
             with torch.inference_mode():
+
                 # the pog for loop
                 assert self.cfg.batch_size % self.cfg.subbatch_size == 0
                 for j in range(0, self.cfg.batch_size, self.cfg.subbatch_size):
-                    for i in range(m_c):
+                    for i in prompts:
+                        gc.collect()
+                        print(f"selected_prompt{i}")
                         next_suffixes_batch = next_suffixes[
                             j : j + self.cfg.subbatch_size
                         ]
 
+                        torch.cuda.empty_cache()
                         tokens_batch = self.embedding_model.splice_tokens_batch(
                             prefixes[i],
                             next_suffixes_batch,
@@ -175,19 +198,44 @@ class UPO:
                             sum_over_batch[j : j + self.cfg.subbatch_size]
                         )
                         if maxes_over_batch[idx] < prev_mm_loss - min_improvement:
-
                             break
 
-            best_suffix_idx = idx or torch.argmin(sum_over_batch)
-            best_suffix = next_suffixes[best_suffix_idx]
+                best_suffix_idx = idx or torch.argmin(sum_over_batch)
+                best_suffix = next_suffixes[best_suffix_idx]
+                self.suffix = best_suffix
+                losses_per_prompt = torch.zeros(m_c, device=self.cfg.device)
+                for i in range(m_c):
+                    tokens_batch = self.embedding_model.splice_tokens_batch(
+                        prefixes[i],
+                        best_suffix.unsqueeze(0),
+                        self.cfg.post_suffix,
+                        targets[i],
+                        get_logits=True,
+                    )
 
-            self.suffix = best_suffix
+                    losses = self.token_gradient_generator.get_loss_looping(
+                        batch=tokens_batch,
+                        target=targets[i],
+                    )
+                    losses_per_prompt[i] = losses
+                    del tokens_batch
+                torch.cuda.empty_cache()
+                gc.collect()
             prev_mm_loss = maxes_over_batch[best_suffix_idx].item()
-            if (
-                maxes_over_batch[best_suffix_idx].item() < self.cfg.threshold
-                and m_c < m
-            ):
-                m_c += 4
+
+            worst_prompt_ids = torch.argsort(losses_per_prompt, descending=True)
+            zipf = 1 / torch.arange(1, m_c + 1, device=self.cfg.device)
+            zipf /= zipf.sum()
+
+            weighted_avg = torch.sum(zipf * losses_per_prompt[worst_prompt_ids])
+            bad_loss_extra_sample_id = worst_prompt_ids[
+                torch.multinomial(zipf, 1).item()
+            ]
+
+            max_loss = losses_per_prompt[worst_prompt_ids[0]].item()
+            if weighted_avg < self.cfg.threshold and m_c < m:
+                m_c += 12
+                prompt_selector = get_prompt_selector(m_c)
 
             if print_between:
                 if run_num % 10 == 0:
@@ -198,7 +246,7 @@ class UPO:
                     print(
                         "loss opt:",
                         maxes_over_batch[best_suffix_idx].item(),
-                        sum_over_batch.mean() / m_c,
+                        sum_over_batch.mean() / len(prompts),
                     )
                     print("m_c:", m_c)
                     print(Style.RESET_ALL)
@@ -206,17 +254,28 @@ class UPO:
             if self.cfg.use_wandb:
                 self.tensor_table.add_data(self.suffix, run_num + 1)
                 wandb.log(
-                    {"loss": maxes_over_batch[best_suffix_idx].item()}, step=run_num + 1
+                    {
+                        "loss": maxes_over_batch[best_suffix_idx].item(),
+                        "time elapsed:": time.time() - self.t0,
+                        "max_loss": max_loss,
+                        "weighted_avg": weighted_avg,
+                        "sum_loss": sum_over_batch[best_suffix_idx].item() / m_c,
+                    },
+                    step=run_num + 1,
                 )
                 wandb.log({"m_c": m_c}, step=run_num + 1)
-                if run_num % 50 == 0:
+                if run_num % 50 + 1 == 0:
                     completions = get_completions(self)
                     for prefix, suffix, completion in completions:
                         self.table.add_data(prefix, suffix, completion, run_num + 1)
 
         if self.cfg.use_wandb:
             wandb.log(
-                {"loss": maxes_over_batch[best_suffix_idx].item()}, step=run_num + 1
+                {
+                    "loss": maxes_over_batch[best_suffix_idx].item(),
+                    "max_loss": max_loss,
+                },
+                step=run_num + 1,
             )
             wandb.log({"m_c": m_c}, step=run_num + 1)
             wandb.log({"table": self.table})
@@ -226,12 +285,13 @@ class UPO:
     def run(self):
         try:
             self.upo(print_between=self.cfg.do_print)
-        except KeyboardInterrupt:
+        except Exception as e:
             print("suffix_tensor", self.suffix.detach().cpu().tolist())
             if self.cfg.use_wandb:
                 wandb.log({"table": self.table})
                 wandb.log({"suffix_tensor": self.tensor_table})
                 wandb.finish()
+            raise e
         finally:
             print("suffix_tensor", self.suffix.detach().cpu().tolist())
 

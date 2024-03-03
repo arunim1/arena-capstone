@@ -8,7 +8,7 @@ notebook
 numpy
 pandas
 torch
-transformers
+transformers @ git+https://github.com/nqgl/transformers
 wandb
 colorama
 sentencepiece
