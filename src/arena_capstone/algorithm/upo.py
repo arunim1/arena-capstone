@@ -15,7 +15,13 @@ from colorama import Back, Fore, Style
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer, PreTrainedModel
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    PreTrainedModel,
+    LlamaForCausalLM,
+    LlamaTokenizer,
+)
 import time
 import arena_capstone.algorithm.topk_gradients as topkgrad
 from arena_capstone.algorithm.embedding_model import (
@@ -366,19 +372,7 @@ def generate(upo: UPO):
 
 
 def main():
-    prefix_strs = [
-        "A cat ",
-        "The cat ",
-        "That dog over there ",
-        "A dog ",
-    ]
-    target_strs = [
-        "is a dawg",
-        "is a dawg",
-        "is a cat",
-        "is a cat and",
-    ]
-
+    torch.set_default_dtype(torch.bfloat16)
     harmful_behavior_data = pd.read_csv("./data/advbench/harmful_behaviors.csv")
     harmful_behavior_data.head()
     prefix_strs = harmful_behavior_data["goal"].tolist()[:1]
@@ -399,13 +393,13 @@ def main():
 
     post_suffix_str = "ASSISTANT: "
     post_suffix = tokenizer(post_suffix_str, return_tensors="pt").input_ids
-    post_suffix = post_suffix.squeeze()
+    post_suffix = post_suffix.squeeze().to(DEVICE)
     print(post_suffix.shape)
 
     cfg = UPOConfig(
         suffix=torch.randint(0, 50257, (10,), device=DEVICE),
         post_suffix=post_suffix,
-        batch_size=128,
+        batch_size=4,
         prefixes=prefixes,
         targets=targets,
         T=500,

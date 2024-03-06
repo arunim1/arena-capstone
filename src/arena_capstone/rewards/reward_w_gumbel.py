@@ -1,3 +1,7 @@
+"""
+First draft; improved version implemented in ../soft_suffix/
+"""
+
 import gc
 from dataclasses import dataclass
 from logging import config

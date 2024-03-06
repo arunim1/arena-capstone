@@ -5,24 +5,10 @@ import accelerate
 import arena_capstone.algorithm.upo as upo_alg4
 from arena_capstone.algorithm.upo import UPO, UPOConfig
 
-# from arena_capstone.gemma.efficient_gemma import EfficientGemmaForCausalLM
-
 torch.set_default_dtype(torch.bfloat16)
 DEVICE = "cuda"
 torch.set_default_device(DEVICE)
 
-prefix_strs = [
-    "A cat ",
-    "The cat ",
-    "That dog over there ",
-    "A dog ",
-]
-target_strs = [
-    "is a dawg",
-    "is a dawg",
-    "is a cat",
-    "is a cat and",
-]
 m = 124
 
 harmful_behavior_data = pd.read_csv("./data/advbench/harmful_behaviors.csv")
@@ -30,25 +16,10 @@ harmful_behavior_data.head()
 prefix_strs = harmful_behavior_data["goal"].tolist()[2:][:m]
 target_strs = harmful_behavior_data["target"].tolist()[2:][:m]
 
-# model = AutoModelForCausalLM.from_pretrained("gpt2").to(DEVICE)
-# tokenizer = AutoTokenizer.from_pretrained("gpt2")
-
 tokenizer = AutoTokenizer.from_pretrained("google/gemma-2b-it")
 model: GemmaForCausalLM = GemmaForCausalLM.from_pretrained(
     "google/gemma-2b-it", device_map="auto", torch_dtype=torch.bfloat16
 )
-# def_correct_model = model.to(device="cuda", dtype=torch.bfloat16)
-# del model
-# model = def_correct_model
-# chat = [
-#     { "role": "user", "content": "Write a hello world program" },
-# ]
-
-# prompt = tokenizer.apply_chat_template(chat, tokenize=True, add_generation_prompt=True)
-
-# <bos><start_of_turn>user
-# Write a hello world program<end_of_turn>
-# <start_of_turn>model
 
 prefix_strs = [
     # adding <start_of_turn>user at the start of the prompt
@@ -69,6 +40,7 @@ prefixes = [
 post_suffix_str = "<end_of_turn>\n<start_of_turn>model\n"
 post_suffix = tokenizer(post_suffix_str, return_tensors="pt").input_ids
 post_suffix = post_suffix.squeeze()
+# post_suffix = torch.zeros(0, device=DEVICE, dtype=torch.long)
 print("post_suffix", post_suffix)
 
 print("cfg vocab size", model.config.vocab_size)
@@ -98,9 +70,8 @@ runsuffix = torch.tensor(
 )
 
 
-# post_suffix = torch.zeros(0, device=DEVICE, dtype=torch.long)
 cfg = UPOConfig(
-    suffix=runsuffix,
+    suffix=randsuffix,  # runsuffix,
     post_suffix=post_suffix,
     batch_size=1024,
     prefixes=prefixes,
@@ -122,14 +93,4 @@ cfg = UPOConfig(
 
 upo = UPO(cfg=cfg, model=model)
 upo.banned_tokens = banned_tokens
-# with torch.cuda.amp.autocast(dtype=torch.bfloat16):
 upo.run()
-
-
-"""
-Notes: 
-> I like the idea of rotating selection instead of all the previous ones, maybe we could also do something UCB-like to make sure we don't accidentally not test on one prompt for half of training 
-> iirc the initial m_c being higher and the "m_c" increment beinghigh  are good. Like start at 4 and then go up by 4 every time we get below threshold 
-> not sure what you mean by entirely covers the search space if the vocab size is OOMs bigger? 
-
-"""

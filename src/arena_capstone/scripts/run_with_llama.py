@@ -156,8 +156,6 @@ def do_upo(device):
     # remove bos <s> token:
     post_suffix = post_suffix[1:]
 
-    init_suffix = torch.randint(0, llamamodel.config.vocab_size, (12,), device=device)
-
     init_suffix_list = [
         23494,
         11850,
@@ -174,6 +172,7 @@ def do_upo(device):
     ]
 
     init_suffix = torch.tensor(init_suffix_list, device=device, dtype=torch.long)
+    init_suffix = torch.randint(0, llamamodel.config.vocab_size, (12,), device=device)
 
     upoconfig = UPOConfig(
         modelname=model_str,
