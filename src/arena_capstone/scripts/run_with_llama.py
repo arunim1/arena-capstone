@@ -55,7 +55,7 @@ def load_from_pt(cls, model_str):
     llama_bf16_path = Path(f"/workspace/{model_str_in_path}llama_bf16.pt")
     if llama_bf16_path.exists():
         # state = torch.load(llama_bf16_path)
-        llamamodel = cls.from_pretrained(llama_bf16_path)
+        llamamodel = cls.from_pretrained(llama_bf16_path).bfloat16()
         print("Loaded Llama model from workspace")
         print(llamamodel.dtype)
         assert llamamodel.dtype == torch.bfloat16
@@ -65,6 +65,7 @@ def load_from_pt(cls, model_str):
     print("Downloading Llama model to workspace")
     llamamodel = cls.from_pretrained(model_str, token=token).bfloat16().eval().cuda()
     llamamodel.save_pretrained(llama_bf16_path)
+    print("returning model of dtype ", llamamodel.dtype)
     return llamamodel
 
 
@@ -172,7 +173,7 @@ def do_upo(device):
     ]
 
     init_suffix = torch.tensor(init_suffix_list, device=device, dtype=torch.long)
-    init_suffix = torch.randint(0, llamamodel.config.vocab_size, (12,), device=device)
+    init_suffix = torch.randint(0, llamamodel.config.vocab_size, (8,), device=device)
 
     upoconfig = UPOConfig(
         modelname=model_str,
@@ -181,11 +182,12 @@ def do_upo(device):
         prefixes=prefixes,
         post_suffix=post_suffix,
         k=128,
-        batch_size=256,
+        batch_size=8,
         device=device,
         T=500,
         threshold=1.3,
         use_wandb=True,
+        subbatch_size=2
     )
 
     upo = UPO(

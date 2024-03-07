@@ -293,7 +293,7 @@ class EmbeddingFriendlyForCausalLM(EmbeddingFriendlyModel):
         assert batch.embeddings.ndim == 3
 
         if get_logits:
-            outputs = self.forward_from_embed(embed=batch.embeddings)
+            outputs = self.forward_from_embed(embed=batch.embeddings.bfloat16())
             batch.logits = outputs.logits
             batch.outputs = outputs
         return batch

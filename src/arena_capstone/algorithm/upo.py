@@ -407,6 +407,7 @@ def main():
         use_wandb=False,
         threshold=1,
         do_print=True,
+        subbatch_size=2,
     )
 
     upo = UPO(cfg=cfg, model=model)
